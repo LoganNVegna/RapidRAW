@@ -1,3 +1,6 @@
+pub(crate) mod organization;
+mod smart_rules;
+use smart_rules::rule_sql;
 pub(crate) mod jobs;
 mod provider;
 mod query_functions;
@@ -115,7 +118,10 @@ pub fn initialize(app: &AppHandle) -> Result<()> {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?
     };
-    if !columns.iter().any(|c| c == "metadata_revision") || !columns.iter().any(|c| c == "hidden") {
+    if !columns.iter().any(|c| c == "metadata_revision")
+        || !columns.iter().any(|c| c == "hidden")
+        || !columns.iter().any(|c| c == "copy_key")
+    {
         let recovery = folder.join("Migrations");
         fs::create_dir_all(&recovery).map_err(|e| e.to_string())?;
         conn.execute(
@@ -140,6 +146,13 @@ pub fn initialize(app: &AppHandle) -> Result<()> {
                 .map_err(|e| e.to_string())?;
         }
     }
+    if !columns.iter().any(|c| c == "copy_key") {
+        conn.execute_batch("ALTER TABLE assets ADD COLUMN copy_key TEXT NOT NULL DEFAULT '';")
+            .map_err(|e| e.to_string())?;
+        conn.execute_batch("UPDATE assets SET copy_key=rr_copy_key(id,path,revision,capture,camera,exif,source_signature,render_revision);").map_err(|e|e.to_string())?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS assets_copy_key ON assets(copy_key);")
+        .map_err(|e| e.to_string())?;
     let _ = ROOT.set(folder);
     let _ = APP.set(app.clone());
     *DB.lock().map_err(|e| e.to_string())? = Some(conn);
@@ -214,6 +227,12 @@ pub struct Rule {
     pub field: String,
     pub operator: String,
     pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<Rule>>,
 }
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
@@ -232,6 +251,8 @@ pub struct LibraryQuery {
     pub colors: Vec<String>,
     pub tags: Vec<String>,
     pub tag_mode: String,
+    pub group_copies: Option<bool>,
+    pub copy_key: Option<String>,
 }
 impl Default for LibraryQuery {
     fn default() -> Self {
@@ -250,6 +271,8 @@ impl Default for LibraryQuery {
             colors: vec![],
             tags: vec![],
             tag_mode: "any".into(),
+            group_copies: None,
+            copy_key: None,
         }
     }
 }
@@ -279,6 +302,10 @@ pub struct Asset {
     #[serde(rename = "mediumPreview")]
     pub medium_preview: Option<String>,
     pub memberships: Vec<String>,
+    #[serde(rename = "copyKey")]
+    pub copy_key: String,
+    #[serde(rename = "copyCount")]
+    pub copy_count: u64,
 }
 const ASSET_COLUMNS: &str = "a.id,a.path,a.modified,a.edited,a.rating,a.flag,a.tags,a.exif,a.raw,a.available,a.review,a.capture,a.camera,a.lens,a.small_preview,a.medium_preview";
 fn row_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
@@ -310,6 +337,8 @@ fn row_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
         small_preview: row.get(14)?,
         medium_preview: row.get(15)?,
         memberships: vec![],
+        copy_key: row.get(16)?,
+        copy_count: row.get::<_, i64>(17)?.max(1) as u64,
     })
 }
 pub(crate) fn revision(path: &Path) -> std::io::Result<String> {
@@ -364,7 +393,7 @@ pub(crate) fn index_path(path: &str, root: &str) -> Result<()> {
         .unwrap_or_default();
     with_db(|db| {
         db.execute(
-            "UPDATE assets SET source_signature=?2,small_preview=CASE WHEN render_revision<>?3 THEN NULL ELSE small_preview END,medium_preview=CASE WHEN render_revision<>?3 THEN NULL ELSE medium_preview END,render_revision=?3,metadata_revision=?4 WHERE path_key=?1",
+            "UPDATE assets SET copy_key=rr_copy_key(id,path,revision,capture,camera,exif,?2,?3),source_signature=?2,small_preview=CASE WHEN render_revision<>?3 THEN NULL ELSE small_preview END,medium_preview=CASE WHEN render_revision<>?3 THEN NULL ELSE medium_preview END,render_revision=?3,metadata_revision=?4 WHERE path_key=?1",
             params![normalized(path), proof, render, metadata_stamp],
         )
         .map(|_| ())
@@ -484,76 +513,11 @@ pub fn metadata_changed(key: &ImageKey, metadata: &ImageMetadata) {
         .to_hex()
         .to_string();
         let _ = with_db(|db| {
-            db.execute("UPDATE assets SET small_preview=CASE WHEN render_revision<>?2 THEN NULL ELSE small_preview END,medium_preview=CASE WHEN render_revision<>?2 THEN NULL ELSE medium_preview END,render_revision=?2 WHERE path_key=?1",params![normalized(&path),render])?;
+            db.execute("UPDATE assets SET copy_key=rr_copy_key(id,path,revision,capture,camera,exif,source_signature,?2),small_preview=CASE WHEN render_revision<>?2 THEN NULL ELSE small_preview END,medium_preview=CASE WHEN render_revision<>?2 THEN NULL ELSE medium_preview END,render_revision=?2 WHERE path_key=?1",params![normalized(&path),render])?;
             Ok(())
         });
         changed();
     }
-}
-fn rule_sql(rule: &Rule, values: &mut Vec<SqlValue>) -> Result<String> {
-    let column = match rule.field.as_str() {
-        "raw" => "a.raw",
-        "rating" => "a.rating",
-        "flag" => "a.flag",
-        "label" => "a.label",
-        "tag" => "a.tags",
-        "date" => "substr(a.capture,1,10)",
-        "camera" => "a.camera",
-        "lens" => "a.lens",
-        "edited" => "a.edited",
-        "available" => "a.available",
-        "review" => "a.review",
-        "path" => "a.path",
-        _ => return Err("Unsupported collection field".into()),
-    };
-    let operator = match rule.operator.as_str() {
-        "eq" => "=",
-        "ne" => "<>",
-        "gte" => ">=",
-        "lte" => "<=",
-        "contains" => "LIKE",
-        "before" => "<",
-        "after" => ">",
-        _ => return Err("Unsupported collection operator".into()),
-    };
-    if rule.field == "tag" && matches!(rule.operator.as_str(), "eq" | "ne") {
-        values.push(SqlValue::Text(rule.value.clone()));
-        values.push(SqlValue::Text(format!("user:{}", rule.value)));
-        return Ok(format!(
-            "{}EXISTS(SELECT 1 FROM json_each(a.tags) WHERE value IN(?,?))",
-            if rule.operator == "ne" { "NOT " } else { "" }
-        ));
-    }
-    let value = if matches!(
-        rule.field.as_str(),
-        "rating" | "edited" | "available" | "raw"
-    ) {
-        SqlValue::Integer(
-            rule.value
-                .parse()
-                .map_err(|_| "A numeric filter value is required")?,
-        )
-    } else {
-        SqlValue::Text(if operator == "LIKE" {
-            format!(
-                "%{}%",
-                rule.value
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            )
-        } else {
-            rule.value.clone()
-        })
-    };
-    values.push(value);
-    if rule.field == "tag" && operator == "LIKE" {
-        return Ok("EXISTS(SELECT 1 FROM json_each(a.tags) WHERE value NOT LIKE 'color:%' AND value LIKE ? ESCAPE '\\')".into());
-    }
-    if operator == "LIKE" {
-        return Ok(format!("{column} LIKE ? ESCAPE '\\'"));
-    }
-    Ok(format!("{column} {operator} ?"))
 }
 #[tauri::command]
 pub async fn library_query(query: LibraryQuery) -> Result<Value> {
@@ -611,8 +575,15 @@ pub fn library_collection(action: String, collection: Value, paths: Vec<String>)
                     return Err("A collection set cannot be placed inside its descendants".into());
                 }
             }
-            let rules: Vec<Rule> =
-                serde_json::from_value(collection["rules"].clone()).unwrap_or_default();
+            let rules: Vec<Rule> = if collection["rules"].is_null() {
+                vec![]
+            } else {
+                serde_json::from_value(collection["rules"].clone())
+                    .map_err(|e| format!("Invalid collection conditions: {e}"))?
+            };
+            if rules.len() > 128 {
+                return Err("Use at most 128 top-level conditions".into());
+            }
             for r in &rules {
                 rule_sql(r, &mut vec![])?;
             }
@@ -1368,7 +1339,12 @@ pub async fn library_folder_status(path: String) -> Result<Value> {
 
 fn query_page(query: LibraryQuery) -> Result<Value> {
     let mut values = Vec::new();
-    let mut conditions = vec!["a.hidden=0".to_string()];
+    let mut conditions = vec![organization::VISIBLE.to_string()];
+    let grouped = query.group_copies.unwrap_or(organization::grouped()?);
+    if let Some(key) = &query.copy_key {
+        conditions.push("coalesce(nullif(a.copy_key,''),a.id)=?".into());
+        values.push(SqlValue::Text(key.clone()));
+    }
     if let Some(folder) = &query.folder {
         let prefix = normalized(folder).trim_end_matches('/').to_string() + "/";
         conditions.push("(a.path_key>=? AND a.path_key<?||char(65535))".into());
@@ -1489,11 +1465,16 @@ fn query_page(query: LibraryQuery) -> Result<Value> {
         _ => "a.capture",
     };
     let sort = format!("{column} {direction},a.path COLLATE NOCASE");
-    let total = with_db(|db| {
+    let counter = if grouped {
+        "count(DISTINCT coalesce(nullif(a.copy_key,''),a.id))"
+    } else {
+        "count(*)"
+    };
+    let (total, file_total) = with_db(|db| {
         db.query_row(
-            &format!("SELECT count(*) FROM assets a WHERE {filter}"),
+            &format!("SELECT {counter},count(*) FROM assets a WHERE {filter}"),
             rusqlite::params_from_iter(values.iter()),
-            |r| r.get::<_, i64>(0),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         )
     })?;
     if query.sort == "manual" && query.collection_id.is_some() {
@@ -1504,9 +1485,16 @@ fn query_page(query: LibraryQuery) -> Result<Value> {
     values.push(SqlValue::Integer(query.limit.clamp(1, 1000) as i64));
     values.push(SqlValue::Integer(query.offset as i64));
     let mut assets = with_db(|db| {
-        let mut stmt = db.prepare(&format!(
-            "SELECT {ASSET_COLUMNS} FROM assets a WHERE {filter} ORDER BY {sort} LIMIT ? OFFSET ?"
-        ))?;
+        let sql = if grouped {
+            format!(
+                "WITH scoped AS (SELECT a.id,a.copy_key,count(*) OVER(PARTITION BY coalesce(nullif(a.copy_key,''),a.id)) copy_count,row_number() OVER(PARTITION BY coalesce(nullif(a.copy_key,''),a.id) ORDER BY a.available DESC,a.rating DESC,a.path_key) copy_rank FROM assets a WHERE {filter}) SELECT {ASSET_COLUMNS},coalesce(nullif(a.copy_key,''),a.id),scoped.copy_count FROM scoped JOIN assets a ON a.id=scoped.id WHERE scoped.copy_rank=1 ORDER BY {sort} LIMIT ? OFFSET ?"
+            )
+        } else {
+            format!(
+                "SELECT {ASSET_COLUMNS},coalesce(nullif(a.copy_key,''),a.id),1 FROM assets a WHERE {filter} ORDER BY {sort} LIMIT ? OFFSET ?"
+            )
+        };
+        let mut stmt = db.prepare(&sql)?;
         let mut assets = stmt
             .query_map(rusqlite::params_from_iter(values.iter()), row_asset)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1555,7 +1543,7 @@ fn query_page(query: LibraryQuery) -> Result<Value> {
         }
     }
     Ok(json!({
-    "assets":assets,"total":total,"offset":query.offset,"limit":query.limit.clamp(1,1000)
+    "assets":assets,"total":total,"fileTotal":file_total,"offset":query.offset,"limit":query.limit.clamp(1,1000)
     }
     ))
 }
@@ -1569,6 +1557,13 @@ fn catalog_state() -> Result<Value> {
 )))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     })?;
+    let grouped = organization::grouped()?;
+    let counter = if grouped {
+        "count(DISTINCT coalesce(nullif(a.copy_key,''),a.id))"
+    } else {
+        "count(*)"
+    };
+    let visible = organization::VISIBLE;
     for collection in &mut collections {
         let count = if collection["kind"] == "smart" {
             let rules: Vec<Rule> =
@@ -1589,23 +1584,25 @@ fn catalog_state() -> Result<Value> {
             };
             with_db(|db| {
                 db.query_row(
-                    &format!("SELECT count(*) FROM assets a WHERE a.hidden=0 AND ({filter})"),
+                    &format!("SELECT {counter} FROM assets a WHERE {visible} AND ({filter})"),
                     rusqlite::params_from_iter(values.iter()),
                     |r| r.get::<_, i64>(0),
                 )
             })?
         } else {
             with_db(|db| {
-                db.query_row("SELECT count(*) FROM members m JOIN assets a ON a.id=m.asset_id WHERE m.collection_id=?1 AND a.hidden=0",[collection["id"].as_str().unwrap_or("")],|r|r.get::<_,i64>(0))
+                db.query_row(&format!("SELECT {counter} FROM members m JOIN assets a ON a.id=m.asset_id WHERE m.collection_id=?1 AND {visible}"),[collection["id"].as_str().unwrap_or("")],|r|r.get::<_,i64>(0))
             })?
         };
         collection["count"] = json!(count);
     }
     let counts = with_db(|db| {
-        db.query_row("SELECT count(*),coalesce(sum(flag='pick'),0),coalesce(sum(flag='reject'),0),coalesce(sum(review='unreviewed'),0),coalesce(sum(available=0),0) FROM assets WHERE hidden=0",[],|r|Ok(json!({
-"all":r.get::<_,i64>(0)?,"picks":r.get::<_,i64>(1)?,"rejected":r.get::<_,i64>(2)?,"unreviewed":r.get::<_,i64>(3)?,"missing":r.get::<_,i64>(4)?
-}
-)))
+        let key = if grouped {
+            "coalesce(nullif(a.copy_key,''),a.id)"
+        } else {
+            "a.id"
+        };
+        db.query_row(&format!("SELECT count(DISTINCT {key}),count(DISTINCT CASE WHEN flag='pick' THEN {key} END),count(DISTINCT CASE WHEN flag='reject' THEN {key} END),count(DISTINCT CASE WHEN review='unreviewed' THEN {key} END),count(DISTINCT CASE WHEN available=0 THEN {key} END) FROM assets a WHERE {visible}"),[],|r|Ok(json!({"all":r.get::<_,i64>(0)?,"picks":r.get::<_,i64>(1)?,"rejected":r.get::<_,i64>(2)?,"unreviewed":r.get::<_,i64>(3)?,"missing":r.get::<_,i64>(4)?})))
     })?;
     let jobs = jobs::list()?;
     let target = with_db(|db| {
@@ -1616,8 +1613,8 @@ fn catalog_state() -> Result<Value> {
     })?
     .unwrap_or_else(|| "quick".into());
     Ok(json!({
-    "collections":collections,"counts":counts,"jobs":jobs,"target":target,"directory":root()?.to_string_lossy(),"cache":raw_cache::stats()?,"storage":raw_cache::layout()?,"roots":with_db(|db|{
-    let mut stmt=db.prepare("SELECT DISTINCT root FROM assets WHERE root<>'' ORDER BY root")?;
+    "groupCopies":grouped,"excludedSources":organization::exclusions()?,"collections":collections,"counts":counts,"jobs":jobs,"target":target,"directory":root()?.to_string_lossy(),"cache":raw_cache::stats()?,"storage":raw_cache::layout()?,"roots":with_db(|db|{
+    let mut stmt=db.prepare("SELECT DISTINCT a.root FROM assets a WHERE a.root<>'' AND a.hidden=0 AND NOT EXISTS(SELECT 1 FROM excluded_sources s WHERE a.path_key=s.path_key OR substr(a.path_key,1,length(s.path_key)+1)=s.path_key||'/') ORDER BY a.root")?;
     stmt.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()
     }
     )?

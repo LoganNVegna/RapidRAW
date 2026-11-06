@@ -119,6 +119,22 @@ fn matches_tag(tags: &[String], exif: &HashMap<String, String>, rating: i64, que
 }
 pub(super) fn register(db: &Connection) -> rusqlite::Result<()> {
     let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+    db.create_scalar_function("rr_copy_key", 8, flags, |ctx| {
+        let values = (0..8)
+            .map(|i| ctx.get::<String>(i))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(super::organization::copy_key(std::array::from_fn(|i| {
+            values[i].as_str()
+        })))
+    })?;
+    db.create_scalar_function("rr_extension", 1, flags, |ctx| {
+        let path = ctx.get::<String>(0)?;
+        Ok(Path::new(path.split("?vc=").next().unwrap_or(""))
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase())
+    })?;
     db.create_scalar_function("rr_basename", 1, flags, |ctx| {
         let path = ctx.get::<String>(0)?;
         Ok(path.rsplit(['/', '\\']).next().unwrap_or("").to_string())

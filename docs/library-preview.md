@@ -18,6 +18,10 @@ The optional catalog metadata provider is a local review-build isolation mechani
 
 ## Contribution sequence
 
+The next organization increment adds reversible source exclusions (retaining asset/edit/membership records), and optional likely-copy grouping across indexed folders and collections. Indexed copy keys use capture metadata, file type, size, render revision and available sampled file fingerprints. They are candidates, not proof of byte equality. Virtual copies, RAW/JPEG variants, missing capture metadata and different rendered edits remain independent. The browser groups after scope/filter evaluation and before pagination; expanding a group restores each matching file. Decisions affect only the displayed file. Full-file duplicate verification remains a separate action.
+
+Smart conditions retain backward compatibility with flat rule arrays and add nested All/Any groups, RAW/file-extension comparisons, numeric exposure fields and arbitrary EXIF-key presence/absence or text comparisons. Values and metadata keys use SQL parameters; malformed/empty nested groups are rejected rather than silently widening results. The copy-key schema migration creates a recovery snapshot and derives keys from catalog metadata without scanning source bytes.
+
 Existing independent draft contributions:
 
 1. [#2119: independent stars and flags](https://github.com/CyberTimon/RapidRAW/pull/2119).
