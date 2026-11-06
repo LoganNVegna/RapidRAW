@@ -318,7 +318,7 @@ pub struct ImageFile {
     is_virtual_copy: bool,
     is_cloud_placeholder: bool,
     is_raw: bool,
-    group_id: Option<String>,
+    pub(crate) group_id: Option<String>,
     #[serde(default)]
     needs_ai: bool,
 }
@@ -349,7 +349,10 @@ fn make_group_key(source_path: &Path) -> String {
     format!("{}/{}", parent.to_string_lossy(), stem.to_string_lossy())
 }
 
-fn assign_group_ids(files: &mut [ImageFile], settings: &crate::app_settings::AppSettings) {
+pub(crate) fn assign_group_ids(
+    files: &mut [ImageFile],
+    settings: &crate::app_settings::AppSettings,
+) {
     let require_matching_exif = settings.require_matching_exif.unwrap_or(false);
     let group_edited_files = settings.group_edited_files.unwrap_or(true);
 
@@ -1323,6 +1326,8 @@ pub fn is_cloud_placeholder(path: &Path) -> bool {
 }
 
 pub fn read_file_mapped(path: &Path) -> Result<Mmap, ReadFileError> {
+    let cached = crate::library::raw_cache::resolve(path);
+    let path = cached.as_deref().unwrap_or(path);
     if !path.is_file() {
         return Err(ReadFileError::Invalid);
     }
@@ -1866,7 +1871,7 @@ fn encode_thumbnail(image: &DynamicImage, target_width: u32) -> Result<Vec<u8>> 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn generate_single_thumbnail_and_cache(
+pub(crate) fn generate_single_thumbnail_and_cache(
     path_str: &str,
     thumb_cache_dir: &Path,
     gpu_context: Option<&GpuContext>,

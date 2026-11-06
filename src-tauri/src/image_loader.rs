@@ -873,6 +873,8 @@ pub fn decode_pristine(
     settings: &AppSettings,
     cancel_token: Option<(Arc<AtomicUsize>, usize)>,
 ) -> Result<(DynamicImage, HashMap<String, String>), String> {
+    let _foreground = crate::library::ForegroundGuard::new();
+    let source_revision = crate::library::revision(source_path).ok();
     if crate::file_management::is_cloud_placeholder(source_path) {
         return Err(format!(
             "'{}' is stored in iCloud and hasn't been downloaded yet. Download it in Finder, then try again.",
@@ -890,7 +892,23 @@ pub fn decode_pristine(
         Ok((image, exif_processing::read_exif_data(path_str, bytes)))
     };
     match read_file_mapped(source_path) {
-        Ok(mmap) => decode(&mmap),
+        Ok(mmap) => {
+            let result = decode(&mmap);
+            if result.is_ok() {
+                let source = source_path.to_path_buf();
+                let revision = source_revision.clone();
+                let _ = std::thread::Builder::new()
+                    .name("raw-cache-recent".into())
+                    .spawn(move || {
+                        crate::library::raw_cache::remember_bytes(
+                            &source,
+                            &mmap,
+                            revision.as_deref(),
+                        )
+                    });
+            }
+            result
+        }
         Err(e) => {
             log::warn!(
                 "Failed to memory-map file '{}': {}. Falling back to standard read.",
@@ -899,7 +917,20 @@ pub fn decode_pristine(
             );
             let bytes = fs::read(source_path)
                 .map_err(|io_err| format!("Fallback read failed for {}: {}", path_str, io_err))?;
-            decode(&bytes)
+            let result = decode(&bytes);
+            if result.is_ok() {
+                let source = source_path.to_path_buf();
+                let _ = std::thread::Builder::new()
+                    .name("raw-cache-recent".into())
+                    .spawn(move || {
+                        crate::library::raw_cache::remember_bytes(
+                            &source,
+                            &bytes,
+                            source_revision.as_deref(),
+                        )
+                    });
+            }
+            result
         }
     }
 }

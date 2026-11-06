@@ -13,7 +13,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock};
 
 use serde_json::Value;
 
@@ -124,10 +124,18 @@ pub trait MetadataProvider: Send + Sync {
     }
 }
 
-static PROVIDER: LazyLock<Arc<dyn MetadataProvider>> = LazyLock::new(|| Arc::new(SidecarProvider));
+static PROVIDER: LazyLock<RwLock<Arc<dyn MetadataProvider>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(SidecarProvider)));
+
+pub fn set_provider(provider: Arc<dyn MetadataProvider>) {
+    *PROVIDER.write().unwrap_or_else(PoisonError::into_inner) = provider;
+}
 
 fn provider() -> Arc<dyn MetadataProvider> {
-    PROVIDER.clone()
+    PROVIDER
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 const LOCK_STRIPES: usize = 64;
@@ -245,6 +253,7 @@ pub fn update(
     let (mut metadata, _) = decode(&*provider, key)?;
     update(&mut metadata);
     store(&*provider, key, &metadata)?;
+    crate::library::metadata_changed(key, &metadata);
     Ok(metadata)
 }
 
@@ -257,7 +266,9 @@ pub fn update_keeping_record(
     let _guard = lock(key);
     let (mut metadata, _) = decode(&*provider, key)?;
     update(&mut metadata);
-    provider.write(key, &encode(&metadata)?)
+    provider.write(key, &encode(&metadata)?)?;
+    crate::library::metadata_changed(key, &metadata);
+    Ok(())
 }
 
 /// The record as raw JSON, for callers that sync it elsewhere untouched.
@@ -269,7 +280,11 @@ pub fn read_json(key: &ImageKey) -> Option<Value> {
 pub fn write_json(key: &ImageKey, value: &Value) -> io::Result<()> {
     let json = encode(value)?;
     let _layout = layout_lock();
-    provider().write(key, &json)
+    provider().write(key, &json)?;
+    if let Ok(metadata) = serde_json::from_value::<ImageMetadata>(value.clone()) {
+        crate::library::metadata_changed(key, &metadata);
+    }
+    Ok(())
 }
 
 pub fn modified_ms(key: &ImageKey) -> Option<u64> {
@@ -302,6 +317,12 @@ pub fn create_virtual_copy(source: &ImageKey) -> io::Result<ImageKey> {
     }
     // The library hides the original when only virtual copy records exist.
     provider.create(&ImageKey::primary(&source.source), &default_json)?;
+    if let Some(metadata) = provider
+        .read(&copy)?
+        .and_then(|s| serde_json::from_str::<ImageMetadata>(&s).ok())
+    {
+        crate::library::metadata_changed(&copy, &metadata);
+    }
     Ok(copy)
 }
 
@@ -311,6 +332,9 @@ pub fn add_virtual_copy(source: &Path, value: &Value) -> io::Result<ImageKey> {
     let json = encode(value)?;
     let _layout = layout_lock();
     provider().write(&copy, &json)?;
+    if let Ok(metadata) = serde_json::from_value::<ImageMetadata>(value.clone()) {
+        crate::library::metadata_changed(&copy, &metadata);
+    }
     Ok(copy)
 }
 
@@ -332,8 +356,12 @@ pub fn records_for(source: &Path) -> Vec<ImageKey> {
 /// Copies the original's record and every virtual copy from one image file to another.
 pub fn copy_all(from: &Path, to: &Path) -> io::Result<()> {
     let provider = provider();
-    for key in provider.records_for(from)? {
-        provider.copy(&key, &key.for_source(to))?;
+    let records = provider.records_for(from)?;
+    for key in &records {
+        provider.copy(key, &key.for_source(to))?;
+    }
+    if let Err(error) = crate::library::source_copied(from, to, &records) {
+        log::warn!("Copied metadata; catalog refresh is needed: {error}");
     }
     Ok(())
 }
@@ -344,11 +372,13 @@ pub fn move_all(from: &Path, to: &Path) -> io::Result<()> {
     for key in provider.records_for(from)? {
         provider.rename(&key, &key.for_source(to))?;
     }
+    crate::library::path_moved(from, to).map_err(io::Error::other)?;
     Ok(())
 }
 
 pub fn remove(keys: &[ImageKey], removal: Removal) -> io::Result<()> {
-    provider().remove(keys, removal)
+    provider().remove(keys, removal)?;
+    crate::library::metadata_removed(keys, removal).map_err(io::Error::other)
 }
 
 pub fn records_under(root: &Path) -> Vec<ImageKey> {
@@ -368,6 +398,9 @@ pub fn records_in_folder(dir: &Path, recursive: bool) -> Vec<ImageKey> {
 }
 
 pub fn folder_renamed(old: &Path, new: &Path) {
+    if let Err(error) = crate::library::path_moved(old, new) {
+        log::error!("Failed to update indexed folder paths: {error}");
+    }
     if let Err(e) = provider().folder_renamed(old, new) {
         log::error!(
             "Failed to move metadata from {} to {}: {}",

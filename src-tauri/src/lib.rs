@@ -59,6 +59,7 @@ mod inpainting;
 mod launch_request;
 mod lens_blur;
 mod lens_correction;
+mod library;
 mod lut_processing;
 mod mask_generation;
 mod memory_budget;
@@ -2429,6 +2430,11 @@ pub fn run() {
                 crate::storage::initialize_thumbnail_cache(cache_dir);
             }
 
+            if let Err(error) = crate::library::initialize(&app_handle) {
+                log::error!("Library initialization failed: {error}");
+                if crate::app_settings::load_settings(app_handle.clone()).is_ok_and(|settings|settings.catalog_metadata_storage){return Err(error.into());}
+            }
+
             {
                 let disks_app_handle = app_handle.clone();
                 std::thread::spawn(move || {
@@ -2790,6 +2796,26 @@ pub fn run() {
             }),
         })
         .invoke_handler(tauri::generate_handler![
+            library::library_query,
+            library::library_previews,
+            library::library_edit,
+            library::library_undo,
+            library::library_suggestion,
+            library::library_accept_suggestions,
+            library::library_backup,
+            library::library_state,
+            library::library_collection,
+            library::library_review,
+            library::library_session,
+            library::library_import_albums,
+            library::library_relink,
+            library::jobs::library_job,
+            library::jobs::library_start_job,
+            library::raw_cache::library_cache,
+            library::raw_cache::library_cache_limits,
+            library::library_resume_session,
+            library::raw_cache::library_exact_duplicates,
+            library::raw_cache::library_focus_check,
             apply_adjustments,
             subscribe_analytics,
             generate_preview_for_path,

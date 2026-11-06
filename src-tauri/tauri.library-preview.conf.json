@@ -1,0 +1,23 @@
+{
+  "productName": "RapidRAW Library Preview",
+  "identifier": "io.github.CyberTimon.RapidRAW.LibraryPreview",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "RapidRAW Library Preview",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
+        "transparent": true,
+        "decorations": false
+      }
+    ]
+  },
+  "bundle": {
+    "resources": ["resources", "lensfun_db", "library-preview.local.json"],
+    "fileAssociations": []
+  }
+}

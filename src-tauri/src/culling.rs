@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 use crate::image_loader;
+use rusqlite::OptionalExtension;
 
 static CULLING_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,13 +28,15 @@ pub struct CullingSettings {
     pub filter_blurry: bool,
     #[serde(default = "default_burst_window")]
     pub burst_window_seconds: u32,
+    #[serde(default)]
+    pub include_reviewed: bool,
 }
 
 fn default_burst_window() -> u32 {
     5
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageAnalysisResult {
     pub path: String,
@@ -46,9 +49,11 @@ pub struct ImageAnalysisResult {
     pub capture_time: Option<i64>,
     pub camera_identity: Option<String>,
     pub analysis_source: String,
+    pub source_revision: String,
+    pub asset_id: String,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CullGroup {
     pub id: String,
@@ -160,8 +165,27 @@ fn group_similar_images(
             grouped[member] = true;
         }
         let mut group_hash = blake3::Hasher::new();
+        let mut identities = Vec::new();
         for &member in &members {
-            group_hash.update(analyses[member].result.path.as_bytes());
+            let path = &analyses[member].result.path;
+            let id = crate::library::with_db(|db| {
+                db.query_row(
+                    "SELECT id FROM assets WHERE path_key=?1",
+                    [crate::library::normalized(path)],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| path.clone());
+            identities.push((id, analyses[member].result.source_revision.clone()));
+        }
+        identities.sort();
+        for (id, stamp) in identities {
+            group_hash.update(id.as_bytes());
+            group_hash.update(&[0]);
+            group_hash.update(stamp.as_bytes());
             group_hash.update(&[0]);
         }
         members.sort_by(|&a, &b| {
@@ -270,35 +294,92 @@ fn analyze_image(
     }
 
     let (source_path, _) = crate::file_management::parse_virtual_path(path);
-    let file_bytes = {
-        let _guard = source_reader.lock().map_err(|error| error.to_string())?;
-        if CULLING_GENERATION.load(Ordering::Relaxed) != generation {
-            return Err("Culling cancelled".to_string());
-        }
-        std::fs::read(&source_path).map_err(|e| e.to_string())?
-    };
-    let physical_path = source_path.to_string_lossy();
-    let exif = crate::exif_processing::read_exif_data_from_bytes(&physical_path, &file_bytes);
-    let (capture_time, camera_identity) = capture_metadata(&exif);
-
-    let (img, analysis_source) = if let Some(preview) =
-        image_loader::safe_embedded_preview_fallback(&file_bytes, &physical_path)
-    {
-        (preview, "embeddedPreview")
-    } else {
-        (
-            image_loader::load_base_image_from_bytes(
-                &file_bytes,
-                &physical_path,
-                true,
-                settings,
-                None,
-            )
-            .map_err(|e| e.to_string())?,
-            "decodedImage",
+    let revision = crate::library::revision(&source_path).map_err(|e| e.to_string())?;
+    let identity = crate::library::with_db(|db| {
+        db.query_row(
+            "SELECT id,render_revision,exif FROM assets WHERE path_key=?1",
+            [crate::library::normalized(path)],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
         )
-    };
+        .optional()
+    })
+    .ok()
+    .flatten();
+    let (asset_id, render, exif) =
+        identity.unwrap_or_else(|| (path.to_string(), String::new(), "{}".into()));
+    let exif: HashMap<String, String> = serde_json::from_str(&exif).unwrap_or_default();
+    let capture = serde_json::to_string(&capture_metadata(&exif)).unwrap_or_default();
+    let stamp = format!("{revision}:{render}:{}", blake3::hash(capture.as_bytes()));
+    let cached=crate::library::with_db(|db|db.query_row("SELECT data FROM analysis WHERE asset_id=(SELECT id FROM assets WHERE path_key=?1) AND revision=?2 AND version=3",rusqlite::params![crate::library::normalized(path),stamp],|r|r.get::<_,String>(0)).optional()).ok().flatten();
+    if let Some(data) = cached.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        && let (Some(hash), Ok(result)) = (
+            data["hash"].as_str(),
+            serde_json::from_value::<ImageAnalysisResult>(data["result"].clone()),
+        )
+        && let Ok(hash) = image_hasher::ImageHash::from_base64(hash)
+    {
+        let mut result = result;
+        result.path = path.to_string();
+        return Ok(ImageAnalysisData { hash, result });
+    }
+    let cached_preview = crate::library::with_db(|db| {
+        db.query_row(
+            "SELECT medium_preview,exif FROM assets WHERE path_key=?1",
+            [crate::library::normalized(path)],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+    })
+    .ok()
+    .flatten();
+    let cached_preview = cached_preview.and_then(|(preview, exif)| {
+        preview.and_then(|p| image::open(p).ok()).map(|image| {
+            (
+                image,
+                serde_json::from_str::<HashMap<String, String>>(&exif).unwrap_or_default(),
+            )
+        })
+    });
+    let (img, exif, analysis_source) = if let Some((image, exif)) = cached_preview {
+        (image, exif, "cachedPreview")
+    } else {
+        let file_bytes = {
+            let _guard = source_reader.lock().map_err(|error| error.to_string())?;
+            if CULLING_GENERATION.load(Ordering::Relaxed) != generation {
+                return Err("Culling cancelled".to_string());
+            }
+            std::fs::read(&source_path).map_err(|e| e.to_string())?
+        };
+        let physical_path = source_path.to_string_lossy();
+        let exif = crate::exif_processing::read_exif_data_from_bytes(&physical_path, &file_bytes);
 
+        let (img, analysis_source) = if let Some(preview) =
+            image_loader::safe_embedded_preview_fallback(&file_bytes, &physical_path)
+        {
+            (preview, "embeddedPreview")
+        } else {
+            (
+                image_loader::load_base_image_from_bytes(
+                    &file_bytes,
+                    &physical_path,
+                    true,
+                    settings,
+                    None,
+                )
+                .map_err(|e| e.to_string())?,
+                "decodedImage",
+            )
+        };
+
+        (img, exif, analysis_source)
+    };
+    let (capture_time, camera_identity) = capture_metadata(&exif);
     let (width, height) = img.dimensions();
     let thumbnail = img.thumbnail(ANALYSIS_DIM, ANALYSIS_DIM);
     let gray_thumbnail = thumbnail.to_luma8();
@@ -323,7 +404,7 @@ fn analyze_image(
 
     let hash = hasher.hash_image(&thumbnail);
 
-    Ok(ImageAnalysisData {
+    let data = ImageAnalysisData {
         hash,
         result: ImageAnalysisResult {
             path: path.to_string(),
@@ -336,8 +417,15 @@ fn analyze_image(
             capture_time,
             camera_identity,
             analysis_source: analysis_source.to_string(),
+            source_revision: revision,
+            asset_id,
         },
-    })
+    };
+    let saved = serde_json::json!({"hash":data.hash.to_base64(),"result":data.result});
+    let _ = crate::library::with_db(|db| {
+        db.execute("INSERT OR REPLACE INTO analysis(asset_id,revision,version,data) SELECT id,?2,3,?3 FROM assets WHERE path_key=?1",rusqlite::params![crate::library::normalized(path),stamp,saved.to_string()]).map(|_|())
+    });
+    Ok(data)
 }
 
 #[tauri::command]
@@ -364,8 +452,50 @@ fn run_culling(
     app_handle: AppHandle,
     generation: usize,
 ) -> Result<CullingSuggestions, String> {
+    let _foreground = crate::library::ForegroundGuard::new();
     let app_settings = load_settings(app_handle.clone()).unwrap_or_default();
 
+    // Persist the scope before analysis so cancellation or restart can resume from cached work.
+    let mut assets = vec![];
+    for (index, path) in paths.iter().enumerate() {
+        if CULLING_GENERATION.load(Ordering::Relaxed) != generation {
+            return Err("Culling cancelled".into());
+        }
+        if index.is_multiple_of(20) {
+            let _ = app_handle.emit(
+                "culling-progress",
+                CullingProgress {
+                    current: index,
+                    total: paths.len(),
+                    stage: "Preparing review session...".into(),
+                },
+            );
+        }
+        if crate::library::index_path(path, "").is_err() {
+            continue;
+        }
+        let id = crate::library::with_db(|db| {
+            db.query_row(
+                "SELECT id FROM assets WHERE path_key=?1",
+                [crate::library::normalized(path)],
+                |r| r.get::<_, String>(0),
+            )
+        })
+        .ok();
+        assets.push(serde_json::json!({"assetId":id,"path":path}));
+    }
+    if !assets.is_empty() {
+        let mut ids: Vec<_> = assets
+            .iter()
+            .filter_map(|a| a["assetId"].as_str())
+            .collect();
+        ids.sort();
+        let id = format!("cull:{}", blake3::hash(ids.join("\n").as_bytes()));
+        let _ = crate::library::library_session(
+            "save".into(),
+            serde_json::json!({"id":id,"kind":"culling","name":format!("Auto Cull · {} photos",assets.len()),"assets":assets,"settings":settings,"query":crate::library::LibraryQuery::default(),"completed":0}),
+        );
+    }
     let total_count = paths.len();
     let completed_count = Arc::new(AtomicUsize::new(0));
     let source_reader = Mutex::new(());
@@ -428,20 +558,83 @@ fn run_culling(
     };
     if settings.group_similar {
         suggestions.similar_groups = group_similar_images(&successful_analyses, &settings);
+        for group in &mut suggestions.similar_groups {
+            let saved = crate::library::with_db(|db| {
+                db.query_row(
+                    "SELECT data FROM suggestions WHERE id=?1 AND state='pending'",
+                    [&group.id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<CullGroup>(&s).ok());
+            if let Some(saved) = saved {
+                let all: Vec<_> = std::iter::once(group.representative.clone())
+                    .chain(group.duplicates.clone())
+                    .collect();
+                if let Some(representative) = all
+                    .iter()
+                    .find(|r| r.asset_id == saved.representative.asset_id)
+                    .cloned()
+                {
+                    group.representative = representative;
+                    group.duplicates = saved
+                        .duplicates
+                        .iter()
+                        .filter_map(|s| all.iter().find(|r| r.asset_id == s.asset_id).cloned())
+                        .collect();
+                    group.reasons = vec![];
+                }
+            }
+        }
+    }
+    let grouped_paths: std::collections::HashSet<String> = suggestions
+        .similar_groups
+        .iter()
+        .flat_map(|group| std::iter::once(&group.representative).chain(group.duplicates.iter()))
+        .map(|r| r.path.clone())
+        .collect();
+    if !settings.include_reviewed {
+        suggestions.similar_groups.retain(|group| {
+            !crate::library::with_db(|db| {
+                db.query_row(
+                    "SELECT state IN('accepted','dismissed') FROM suggestions WHERE id=?1",
+                    [&group.id],
+                    |r| r.get::<_, bool>(0),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+        });
     }
 
     if settings.filter_blurry {
-        let grouped_paths: std::collections::HashSet<&str> = suggestions
-            .similar_groups
-            .iter()
-            .flat_map(|group| std::iter::once(&group.representative).chain(group.duplicates.iter()))
-            .map(|image| image.path.as_str())
-            .collect();
         for item in &successful_analyses {
             if !grouped_paths.contains(item.result.path.as_str())
                 && item.result.sharpness_metric < settings.blur_threshold
             {
-                suggestions.blurry_images.push(item.result.clone());
+                let id = format!(
+                    "blur:{}:{}",
+                    item.result.asset_id, item.result.source_revision
+                );
+                let reviewed = crate::library::with_db(|db| {
+                    db.query_row(
+                        "SELECT state IN('accepted','dismissed') FROM suggestions WHERE id=?1",
+                        [id],
+                        |r| r.get::<_, bool>(0),
+                    )
+                    .optional()
+                })
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+                if settings.include_reviewed || !reviewed {
+                    suggestions.blurry_images.push(item.result.clone());
+                }
             }
         }
         suggestions.blurry_images.sort_by(|a, b| {

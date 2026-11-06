@@ -658,6 +658,10 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_directory: Option<String>,
     #[serde(default)]
+    pub library_directory: Option<String>,
+    #[serde(default)]
+    pub catalog_metadata_storage: bool,
+    #[serde(default)]
     pub ai_maps_cache_limit_gb: Option<u32>,
     #[serde(default)]
     pub export_worker_threads: Option<u32>,
@@ -840,6 +844,8 @@ impl Default for AppSettings {
             ai_cache_limit_gb: Some(default_ai_cache_limit_gb()),
             thumbnail_cache_limit_gb: Some(default_thumbnail_cache_limit_gb()),
             cache_directory: None,
+            library_directory: None,
+            catalog_metadata_storage: false,
             ai_maps_cache_limit_gb: Some(default_ai_maps_cache_limit_gb()),
             export_worker_threads: None,
             export_memory_limit: None,
@@ -924,6 +930,34 @@ pub fn load_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
 
 fn read_settings_from_disk(app_handle: &AppHandle) -> Result<AppSettings, String> {
     let path = get_settings_path(app_handle)?;
+
+    // A separately identified review build may ship a first-run profile. Normal
+    // releases never read it, and an existing user's settings always take priority.
+    if !path.exists() && app_handle.config().identifier.ends_with(".LibraryPreview") {
+        let profile = app_handle
+            .path()
+            .resource_dir()
+            .map_err(|e| e.to_string())?
+            .join("library-preview.local.json");
+        if profile.is_file() {
+            let mut settings =
+                serde_json::to_value(AppSettings::default()).map_err(|e| e.to_string())?;
+            let overrides: Value =
+                serde_json::from_slice(&fs::read(profile).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            for (key, value) in overrides.as_object().ok_or("Invalid preview profile")? {
+                settings[key] = value.clone();
+            }
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
 
     let mut settings: AppSettings = if path.exists() {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
