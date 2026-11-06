@@ -7,16 +7,136 @@ static SPACE: LazyLock<Mutex<Option<(std::time::Instant, u64)>>> =
 static PREVIEW_SCAN: LazyLock<Mutex<Option<std::time::Instant>>> =
     LazyLock::new(|| Mutex::new(None));
 static PREVIEW_USED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+type MountInventory = Option<(std::time::Instant, Vec<String>)>;
+static MOUNTS: LazyLock<Mutex<MountInventory>> = LazyLock::new(|| Mutex::new(None));
 const GIB: u64 = 1024 * 1024 * 1024;
-const RAW_LIMIT: u64 = 150 * GIB;
-const PREVIEW_LIMIT: u64 = 50 * GIB;
-const RESERVE: u64 = 100 * GIB;
-#[derive(Clone, Serialize, Deserialize)]
+const RAW_LIMIT: u64 = 20 * GIB;
+const PREVIEW_LIMIT: u64 = 10 * GIB;
+const RESERVE: u64 = 5 * GIB;
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheLimits {
     raw_gib: u64,
     preview_gib: u64,
     reserve_gib: u64,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StorageLayout {
+    enabled: bool,
+    cache_kind: String,
+    sources: Vec<StorageSource>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StorageSource {
+    path: String,
+    kind: String,
+}
+pub(super) fn seed_settings(settings: &crate::app_settings::AppSettings) -> Result<()> {
+    for (key, value) in [
+        (
+            "storage-layout",
+            serde_json::to_value(&settings.library_storage),
+        ),
+        (
+            "cache-limits",
+            serde_json::to_value(&settings.library_cache_defaults),
+        ),
+    ] {
+        let value = value.map_err(|e| e.to_string())?;
+        if !value.is_null() {
+            with_db(|db| {
+                db.execute(
+                    "INSERT OR IGNORE INTO state(key,value) VALUES(?1,?2)",
+                    params![key, value.to_string()],
+                )
+                .map(|_| ())
+            })?;
+        }
+    }
+    Ok(())
+}
+pub fn layout() -> Result<StorageLayout> {
+    let value = with_db(|db| {
+        db.query_row(
+            "SELECT value FROM state WHERE key='storage-layout'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+    })?;
+    Ok(value
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default())
+}
+#[tauri::command]
+pub fn library_storage_layout(value: StorageLayout) -> Result<()> {
+    if !["", "unknown", "ssd", "hdd", "network"].contains(&value.cache_kind.as_str())
+        || value.sources.iter().any(|source| {
+            source.path.is_empty()
+                || !["unknown", "ssd", "hdd", "network"].contains(&source.kind.as_str())
+        })
+    {
+        return Err("Choose valid storage types".into());
+    }
+    with_db(|db| {
+        db.execute(
+            "INSERT OR REPLACE INTO state(key,value) VALUES('storage-layout',?1)",
+            [serde_json::to_string(&value).unwrap_or_default()],
+        )
+        .map(|_| ())
+    })?;
+    changed();
+    Ok(())
+}
+fn eligible(source: &Path) -> Result<bool> {
+    let layout = layout()?;
+    if !layout.enabled || layout.cache_kind != "ssd" {
+        return Ok(false);
+    }
+    let key = normalized(&source.to_string_lossy());
+    let source_type = layout
+        .sources
+        .iter()
+        .filter(|s| {
+            let prefix = normalized(&s.path).trim_end_matches('/').to_string();
+            key == prefix || key.starts_with(&(prefix + "/"))
+        })
+        .max_by_key(|s| s.path.len())
+        .map(|s| s.kind.as_str());
+    if !matches!(source_type, Some("hdd" | "network")) {
+        return Ok(false);
+    }
+    let cache = cache_root()?;
+    let mut inventory = MOUNTS.lock().map_err(|e| e.to_string())?;
+    if inventory
+        .as_ref()
+        .is_none_or(|(time, _)| time.elapsed() > std::time::Duration::from_secs(60))
+    {
+        let mounts = sysinfo::Disks::new_with_refreshed_list()
+            .iter()
+            .map(|disk| normalized(&disk.mount_point().to_string_lossy()))
+            .collect();
+        *inventory = Some((std::time::Instant::now(), mounts));
+    }
+    let mounts = &inventory.as_ref().ok_or("No storage inventory")?.1;
+    let mount = |path: &Path| {
+        let path = normalized(&path.to_string_lossy());
+        mounts
+            .iter()
+            .filter(|root| path.starts_with(root.as_str()))
+            .max_by_key(|root| root.len())
+    };
+    // Explicit source tags also support network shares absent from the disk inventory.
+    match (mount(source), mount(&cache)) {
+        (Some(a), Some(b)) => Ok(a != b),
+        _ => Ok(!key.starts_with(
+            &(normalized(&cache.to_string_lossy())
+                .trim_end_matches('/')
+                .to_string()
+                + "/"),
+        )),
+    }
 }
 fn limits() -> Result<CacheLimits> {
     let value = with_db(|db| {
@@ -379,7 +499,7 @@ pub fn resolve(source: &Path) -> Option<PathBuf> {
     Some(local)
 }
 pub fn remember_bytes(source: &Path, bytes: &[u8], expected_revision: Option<&str>) {
-    if !crate::formats::is_raw_file(source) {
+    if !crate::formats::is_raw_file(source) || !eligible(source).unwrap_or(false) {
         return;
     }
     let result = (|| -> Result<()> {
@@ -442,6 +562,8 @@ pub fn remember_bytes(source: &Path, bytes: &[u8], expected_revision: Option<&st
 pub async fn library_cache(paths: Vec<String>, action: String) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
         if action == "cache" || action == "pin" {
+            let paths: Vec<_> = paths.into_iter().filter(|path| eligible(&ImageKey::parse(path).source).unwrap_or(false)).collect();
+            if paths.is_empty() { return Err("No photos need a faster working copy. Configure source storage and a separate SSD cache in Library utilities.".into()); }
             super::jobs::enqueue_paths(
                 if action == "pin" {
                     "cache-pin"

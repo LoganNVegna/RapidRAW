@@ -2804,6 +2804,8 @@ pub fn run() {
             library::library_accept_suggestions,
             library::library_backup,
             library::library_state,
+            library::library_folder_status,
+            library::raw_cache::library_storage_layout,
             library::library_collection,
             library::library_review,
             library::library_session,

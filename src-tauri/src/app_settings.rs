@@ -66,6 +66,8 @@ pub struct LastFolderState {
     #[serde(default)]
     pub current_folder_path: Option<String>,
     #[serde(default)]
+    pub catalog_query: Option<Value>,
+    #[serde(default)]
     pub expanded_folders: Vec<String>,
     #[serde(default)]
     pub active_album_id: Option<String>,
@@ -662,6 +664,10 @@ pub struct AppSettings {
     #[serde(default)]
     pub catalog_metadata_storage: bool,
     #[serde(default)]
+    pub library_storage: Option<crate::library::raw_cache::StorageLayout>,
+    #[serde(default)]
+    pub library_cache_defaults: Option<crate::library::raw_cache::CacheLimits>,
+    #[serde(default)]
     pub ai_maps_cache_limit_gb: Option<u32>,
     #[serde(default)]
     pub export_worker_threads: Option<u32>,
@@ -846,6 +852,8 @@ impl Default for AppSettings {
             cache_directory: None,
             library_directory: None,
             catalog_metadata_storage: false,
+            library_storage: None,
+            library_cache_defaults: None,
             ai_maps_cache_limit_gb: Some(default_ai_maps_cache_limit_gb()),
             export_worker_threads: None,
             export_memory_limit: None,

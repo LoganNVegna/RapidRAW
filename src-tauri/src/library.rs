@@ -73,12 +73,16 @@ pub(crate) fn cache_root() -> Result<PathBuf> {
 }
 pub fn initialize(app: &AppHandle) -> Result<()> {
     let settings = load_settings(app.clone())?;
-    let folder = settings.library_directory.map(PathBuf::from).unwrap_or(
-        app.path()
-            .app_data_dir()
-            .map_err(|e| e.to_string())?
-            .join("Library"),
-    );
+    let folder = settings
+        .library_directory
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or(
+            app.path()
+                .app_data_dir()
+                .map_err(|e| e.to_string())?
+                .join("Library"),
+        );
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let cache = crate::storage::cache_dir(app)?;
     let library_path = normalized(
@@ -139,6 +143,7 @@ pub fn initialize(app: &AppHandle) -> Result<()> {
     let _ = ROOT.set(folder);
     let _ = APP.set(app.clone());
     *DB.lock().map_err(|e| e.to_string())? = Some(conn);
+    raw_cache::seed_settings(&settings)?;
     let analysis = cache_root()?.join("analysis.sqlite");
     with_db(|db| {
         db.execute(
@@ -1330,6 +1335,37 @@ pub fn library_accept_suggestions(paths: Vec<String>, decisions: Vec<Value>) -> 
     Ok(())
 }
 
+#[tauri::command]
+pub async fn library_folder_status(path: String) -> Result<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut photos = 0;
+        let mut videos = 0;
+        let mut folders = 0;
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) => return Ok(json!({"available":false,"error":error.to_string()})),
+        };
+        // Only inspect names in the selected directory; never walk a drive for an empty-state message.
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_dir() {
+                folders += 1;
+            } else if kind.is_file() {
+                if crate::formats::is_supported_image_file(entry.path()) {
+                    photos += 1;
+                } else if entry.path().extension().and_then(|s| s.to_str()).is_some_and(|extension| {
+                    ["mp4", "mov", "avi", "mkv", "mts", "m2ts"].iter().any(|v| extension.eq_ignore_ascii_case(v))
+                }) {
+                    videos += 1;
+                }
+            }
+        }
+        let indexed = query_page(LibraryQuery { folder: Some(path), recursive: true, limit: 1, ..Default::default() })?;
+        Ok(json!({"available":true,"photos":photos,"videos":videos,"folders":folders,"indexed":indexed["total"]}))
+    }).await.map_err(|e| e.to_string())?
+}
+
 fn query_page(query: LibraryQuery) -> Result<Value> {
     let mut values = Vec::new();
     let mut conditions = vec!["a.hidden=0".to_string()];
@@ -1580,7 +1616,7 @@ fn catalog_state() -> Result<Value> {
     })?
     .unwrap_or_else(|| "quick".into());
     Ok(json!({
-    "collections":collections,"counts":counts,"jobs":jobs,"target":target,"directory":root()?.to_string_lossy(),"cache":raw_cache::stats()?,"roots":with_db(|db|{
+    "collections":collections,"counts":counts,"jobs":jobs,"target":target,"directory":root()?.to_string_lossy(),"cache":raw_cache::stats()?,"storage":raw_cache::layout()?,"roots":with_db(|db|{
     let mut stmt=db.prepare("SELECT DISTINCT root FROM assets WHERE root<>'' ORDER BY root")?;
     stmt.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()
     }
