@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useRef } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { ChevronLeft, ChevronRight, Check, Undo2 } from 'lucide-react';
+import { Loader2, Check, Undo2 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { Asset, Catalog, Query, Rule, Session, useCatalogStore } from '../../store/useCatalogStore';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -12,11 +12,23 @@ import { useUIStore } from '../../store/useUIStore';
 import { Invokes, LibraryDisplayMode, LibraryViewMode } from '../ui/AppProperties';
 import CatalogDialogs from './CatalogDialogs';
 import NativeDetailDialog from './NativeDetailDialog';
+import { CatalogFeed, FeedState } from './CatalogFeed';
 
 // Supply the original grid and editor; there is no separate catalog browser.
 export default function CatalogWorkspace() {
   const { t } = useTranslation();
-  const { active, query, total, refresh: revision, resume } = useCatalogStore();
+  const {
+    active,
+    query,
+    total,
+    loaded,
+    loading,
+    loadError,
+    previewPaths,
+    refresh: revision,
+    resume,
+  } = useCatalogStore();
+  const cullingOpen = useUIStore((s) => s.cullingModalState.isOpen);
   const settings = useSettingsStore((s) => s.appSettings);
   const filter = useLibraryStore((s) => s.filterCriteria);
   const search = useLibraryStore((s) => s.searchCriteria);
@@ -34,8 +46,7 @@ export default function CatalogWorkspace() {
     lastScope.current = scope;
   }
   const isReview = settings?.libraryDisplayMode === LibraryDisplayMode.Cull;
-  const generation = useRef(0),
-    mounted = useRef(true),
+  const mounted = useRef(true),
     activeRef = useRef(active);
   activeRef.current = active;
   const latest = useRef<Query>(query);
@@ -58,6 +69,7 @@ export default function CatalogWorkspace() {
     constraints.push({ field: 'raw', operator: 'eq', value: filter.rawStatus === 'rawOnly' ? '1' : '0' });
   latest.current = {
     ...query,
+    offset: resume || useCatalogStore.getState().pendingAssetId ? query.offset : 0,
     recursive: query.folder ? settings?.libraryViewMode === LibraryViewMode.Recursive : query.recursive,
     search: search.text,
     sort: query.sort === 'manual' ? 'manual' : sort.key === 'date_taken' ? 'capture' : sort.key,
@@ -68,84 +80,120 @@ export default function CatalogWorkspace() {
     tagMode: search.mode === 'AND' ? 'all' : 'any',
   };
   const filters = JSON.stringify({ filter, search, sort, folderMode: settings?.libraryViewMode });
+  const feed = useRef<CatalogFeed | null>(null);
+  if (!feed.current)
+    feed.current = new CatalogFeed(
+      (query) => invoke('library_query', { query }),
+      (state: FeedState) => {
+        if (!mounted.current || !activeRef.current) return;
+        useCatalogStore
+          .getState()
+          .set({ total: state.total, loaded: state.assets.length, loading: state.loading, loadError: state.error });
+        if (state.loading || state.error) return;
+        const assets = state.assets;
+        useLibraryStore.getState().setLibrary({
+          imageList: assets,
+          imageRatings: Object.fromEntries(assets.map((a) => [a.path, a.rating])),
+          exifByPath: Object.fromEntries(assets.map((a) => [a.path, a.exif || {}])),
+          isViewLoading: false,
+        });
+        const { pendingSelection: pending, pendingAssetId, pendingAssetIndex } = useCatalogStore.getState();
+        const chosen =
+          assets.find((a) => a.assetId === pendingAssetId) ||
+          (pendingAssetIndex !== undefined
+            ? assets[pendingAssetIndex]
+            : pending === 'last'
+              ? assets.at(-1)
+              : pending === 'first'
+                ? assets[0]
+                : undefined);
+        if (chosen) {
+          useCatalogStore
+            .getState()
+            .set({ pendingSelection: undefined, pendingAssetId: undefined, pendingAssetIndex: undefined });
+          useLibraryStore.getState().setLibrary({
+            libraryActivePath: chosen.path,
+            multiSelectedPaths: [chosen.path],
+            selectionAnchorPath: chosen.path,
+          });
+          useUIStore.getState().imageSelectHandler?.(chosen.path, false);
+        }
+        useProcessStore.getState().setProcess((s) => ({
+          thumbnails: {
+            ...s.thumbnails,
+            ...Object.fromEntries(
+              assets.filter((a) => a.smallPreview).map((a) => [a.path, convertFileSrc(a.smallPreview!)]),
+            ),
+          },
+          mediumThumbnails: {
+            ...s.mediumThumbnails,
+            ...Object.fromEntries(
+              assets.filter((a) => a.mediumPreview).map((a) => [a.path, convertFileSrc(a.mediumPreview!)]),
+            ),
+          },
+        }));
+      },
+    );
   const refresh = useCallback(async () => {
-    const n = ++generation.current;
     void invoke<Catalog>('library_state')
       .then((catalog) => {
-        if (mounted.current && n === generation.current) useCatalogStore.getState().set({ catalog });
+        if (mounted.current) useCatalogStore.getState().set({ catalog });
       })
-      .catch((e) => toast.error(String(e)));
+      .catch((e) => console.error('Failed to refresh library state:', e));
     if (!activeRef.current) return;
-    const page = await invoke<{ assets: Asset[]; total: number }>('library_query', { query: latest.current });
-    if (!mounted.current || !activeRef.current || n !== generation.current) return;
-    useCatalogStore.getState().set({ total: page.total });
-    useLibraryStore.getState().setLibrary({
-      imageList: page.assets,
-      imageRatings: Object.fromEntries(page.assets.map((a) => [a.path, a.rating])),
-      exifByPath: Object.fromEntries(page.assets.map((a) => [a.path, a.exif || {}])),
-      isViewLoading: false,
-    });
-    const { pendingSelection: pending, pendingAssetId } = useCatalogStore.getState();
-    if ((pending || pendingAssetId) && page.assets.length) {
-      const chosen =
-        page.assets.find((a) => a.assetId === pendingAssetId) ||
-        (pending === 'last' ? page.assets.at(-1)! : page.assets[0]);
-      useCatalogStore.getState().set({ pendingSelection: undefined, pendingAssetId: undefined });
-      useLibraryStore.getState().setLibrary({
-        libraryActivePath: chosen.path,
-        multiSelectedPaths: [chosen.path],
-        selectionAnchorPath: chosen.path,
-      });
-      useUIStore.getState().imageSelectHandler?.(chosen.path, false);
-    }
-    useProcessStore.getState().setProcess((s) => ({
-      thumbnails: {
-        ...s.thumbnails,
-        ...Object.fromEntries(
-          page.assets.filter((a) => a.smallPreview).map((a) => [a.path, convertFileSrc(a.smallPreview!)]),
-        ),
-      },
-      mediumThumbnails: {
-        ...s.mediumThumbnails,
-        ...Object.fromEntries(
-          page.assets.filter((a) => a.mediumPreview).map((a) => [a.path, convertFileSrc(a.mediumPreview!)]),
-        ),
-      },
-    }));
+    feed.current!.setQuery(latest.current);
+    await feed.current!.refresh((useCatalogStore.getState().pendingAssetIndex ?? -1) + 1);
   }, []);
   useEffect(() => {
     mounted.current = true;
     let timer: ReturnType<typeof setTimeout>;
     const off = listen('library-changed', () => {
       clearTimeout(timer);
-      timer = setTimeout(() => void refresh().catch((e) => toast.error(String(e))), 250);
+      timer = setTimeout(() => void refresh(), 600);
     });
-    void refresh().catch((e) => toast.error(String(e)));
+    useCatalogStore.getState().set({
+      loadMore: (retry = false) => {
+        if (!activeRef.current) return;
+        if (retry && !feed.current!.state.assets.length) void refresh();
+        else void feed.current!.more(retry);
+      },
+    });
     return () => {
       mounted.current = false;
+      feed.current?.cancel();
       clearTimeout(timer);
       void off.then((fn) => fn());
       void invoke('library_previews', { paths: [] });
     };
   }, [refresh]);
   useEffect(() => {
-    if (active) void refresh().catch((e) => toast.error(String(e)));
+    if (active) void refresh();
+    else feed.current?.cancel();
   }, [active, query, filters, revision, refresh]);
+  const previewCandidates = new Set(previewPaths || []);
+  if (activePath) previewCandidates.add(activePath);
+  const visibleAssets = (imageList as Asset[]).filter((asset) => previewCandidates.has(asset.path));
+  const missing =
+    active && !cullingOpen
+      ? (visibleAssets.length ? visibleAssets : (imageList.slice(0, 60) as Asset[]))
+          .filter((a) => a.available && (!a.smallPreview || !a.mediumPreview))
+          .map((a) => a.path)
+          .join('\n')
+      : '';
   useEffect(() => {
-    const s = useCatalogStore.getState();
-    if (s.query.offset) s.set({ query: { ...s.query, offset: 0 } });
-  }, [filters]);
-  const missing = active
-    ? (imageList as Asset[])
-        .filter((a) => a.available && (!a.smallPreview || !a.mediumPreview))
-        .map((a) => a.path)
-        .join('\n')
-    : '';
-  useEffect(() => {
+    let cancelled = false;
     if (missing)
       void invoke('library_previews', { paths: missing.split('\n') })
-        .then(refresh)
-        .catch((e) => toast.error(String(e)));
+        .then(() => {
+          if (!cancelled) void refresh();
+        })
+        .catch((e) => {
+          if (!cancelled) toast.error(String(e));
+        });
+    return () => {
+      cancelled = true;
+      if (missing) void invoke('library_previews', { paths: [] });
+    };
   }, [missing, refresh]);
   useEffect(() => {
     if (!settings?.rootFolders?.length || useLibraryStore.getState().rootPaths.length) return;
@@ -285,34 +333,29 @@ export default function CatalogWorkspace() {
             >
               <Undo2 size={15} />
             </button>
-            {total > query.limit && (
-              <>
-                <button
-                  aria-label={t('catalog.previousPage')}
-                  disabled={!query.offset}
-                  className="disabled:opacity-25"
-                  onClick={() =>
-                    useCatalogStore
-                      .getState()
-                      .set({ query: { ...query, offset: Math.max(0, query.offset - query.limit) } })
-                  }
-                >
-                  <ChevronLeft size={16} />
+            {loading && (
+              <span role="status" className="flex items-center gap-2">
+                <Loader2 size={14} className="animate-spin" />
+                {t('catalog.loadingPhotos')}
+              </span>
+            )}
+            {loadError ? (
+              <span role="alert" className="flex items-center gap-2 text-amber-400">
+                {t('catalog.loadingFailed')}
+                <button className="underline px-2 py-1" onClick={() => useCatalogStore.getState().loadMore?.(true)}>
+                  {t('catalog.retry')}
                 </button>
-                <span>
-                  {query.offset + 1}–{Math.min(query.offset + query.limit, total)}
-                </span>
+              </span>
+            ) : (
+              !loading &&
+              loaded < total && (
                 <button
-                  aria-label={t('catalog.nextPage')}
-                  disabled={query.offset + query.limit >= total}
-                  className="disabled:opacity-25"
-                  onClick={() =>
-                    useCatalogStore.getState().set({ query: { ...query, offset: query.offset + query.limit } })
-                  }
+                  className="px-2 py-1 hover:text-text-primary"
+                  onClick={() => useCatalogStore.getState().loadMore?.()}
                 >
-                  <ChevronRight size={16} />
+                  {t('catalog.loadMorePhotos')}
                 </button>
-              </>
+              )
             )}
           </div>
         </div>

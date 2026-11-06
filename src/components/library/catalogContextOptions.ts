@@ -1,3 +1,4 @@
+import { canCacheSource } from './storageLayout';
 import { invoke } from '@tauri-apps/api/core';
 import { Check, Folder, HardDrive, ListStart, Pin, PinOff, Undo2, X } from 'lucide-react';
 import { toast } from 'react-toastify';
@@ -8,6 +9,7 @@ export function catalogContextOptions(paths: string[]): Option[] {
   const state = useCatalogStore.getState();
   if (!state.active) return [];
   const collection = state.catalog?.collections.find((c) => c.id === state.query.collectionId);
+  const eligible = paths.filter((path) => canCacheSource(state.catalog?.storage, path, state.catalog?.cache.directory));
   return [
     {
       label: 'Check native-resolution detail…',
@@ -72,19 +74,27 @@ export function catalogContextOptions(paths: string[]): Option[] {
           : []),
       ],
     },
-    {
-      label: 'SSD cache',
-      icon: HardDrive,
-      submenu: [
-        {
-          label: 'Cache on SSD',
-          icon: HardDrive,
-          onClick: run(() => invoke('library_cache', { paths, action: 'cache' })),
-        },
-        { label: 'Pin on SSD', icon: Pin, onClick: run(() => invoke('library_cache', { paths, action: 'pin' })) },
-        { label: 'Unpin', icon: PinOff, onClick: run(() => invoke('library_cache', { paths, action: 'unpin' })) },
-      ],
-    },
+    ...(eligible.length
+      ? [
+          {
+            label: 'Working copies',
+            icon: HardDrive,
+            submenu: [
+              {
+                label: 'Cache on faster drive',
+                icon: HardDrive,
+                onClick: run(() => invoke('library_cache', { paths: eligible, action: 'cache' })),
+              },
+              {
+                label: 'Pin on faster drive',
+                icon: Pin,
+                onClick: run(() => invoke('library_cache', { paths: eligible, action: 'pin' })),
+              },
+              { label: 'Unpin', icon: PinOff, onClick: run(() => invoke('library_cache', { paths, action: 'unpin' })) },
+            ],
+          },
+        ]
+      : [{ label: 'Configure storage…', icon: HardDrive, onClick: () => state.set({ utilities: true }) }]),
     { label: 'Undo library decision', icon: Undo2, onClick: run(() => invoke('library_undo')) },
   ];
 }

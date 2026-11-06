@@ -26,6 +26,7 @@ import { Thumbnail } from './LibraryItems';
 import Text from '../../ui/Text';
 import { TextColors, TextVariants, TextWeights } from '../../../types/typography';
 import { useProcessStore } from '../../../store/useProcessStore';
+import { useCatalogStore } from '../../../store/useCatalogStore';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { useSettingsStore } from '../../../store/useSettingsStore';
 import { useLibraryActions } from '../../../hooks/useLibraryActions';
@@ -1281,6 +1282,18 @@ export default function CullingView(props: any) {
         <div key={`${sidebarWidth}-${thumbnailAspectRatio}`} style={{ height: listHeight, width: '100%' }}>
           <List
             listRef={setListHandle}
+            onRowsRendered={({ startIndex, stopIndex }) => {
+              const state = useCatalogStore.getState();
+              const paths = imageList
+                .slice(Math.max(0, startIndex - 2), stopIndex + 9)
+                .map((image: ImageFile) => image.path);
+              if (state.active && paths.join('\n') !== state.previewPaths?.join('\n'))
+                state.set({ previewPaths: paths });
+              if (stopIndex >= imageList.length - 8) {
+                const catalog = useCatalogStore.getState();
+                if (catalog.active) catalog.loadMore?.();
+              }
+            }}
             rowCount={imageList.length}
             rowHeight={sidebarWidth - 16}
             rowComponent={Row}

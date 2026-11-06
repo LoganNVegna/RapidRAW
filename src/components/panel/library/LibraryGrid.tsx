@@ -5,6 +5,7 @@ import debounce from 'lodash.debounce';
 import { useTranslation } from 'react-i18next';
 import { Row } from './LibraryItems';
 import { useShallow } from 'zustand/react/shallow';
+import { useCatalogStore } from '../../../store/useCatalogStore';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import {
   LibraryViewMode,
@@ -737,6 +738,18 @@ export default function LibraryGrid(props: any) {
         <div style={{ height: gridData.isListView ? gridSize.height - 36 : gridSize.height, width: gridSize.width }}>
           <List
             listRef={setListHandle}
+            onRowsRendered={({ startIndex, stopIndex }) => {
+              const state = useCatalogStore.getState();
+              const paths = gridData.rows
+                .slice(Math.max(0, startIndex - 2), stopIndex + 9)
+                .flatMap((row) => (row.type === 'images' ? row.images.map((image: ImageFile) => image.path) : []));
+              if (state.active && paths.join('\n') !== state.previewPaths?.join('\n'))
+                state.set({ previewPaths: paths });
+              if (stopIndex >= gridData.rows.length - 8) {
+                const catalog = useCatalogStore.getState();
+                if (catalog.active) catalog.loadMore?.();
+              }
+            }}
             rowCount={gridData.rows.length}
             rowHeight={getItemSize}
             onScroll={(e: React.UIEvent<HTMLElement>) => handleScroll(e.currentTarget.scrollTop)}

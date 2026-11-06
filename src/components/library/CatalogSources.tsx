@@ -1,3 +1,4 @@
+import { canCacheSource } from './storageLayout';
 import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { useDroppable } from '@dnd-kit/core';
@@ -86,26 +87,38 @@ function CollectionRow({ collection, depth, toggle }: { collection: Collection; 
                 });
               }),
             },
-            {
-              label: 'Cache collection on SSD',
-              onClick: action(async () => {
-                await invoke('library_cache', { paths: await allPaths(), action: 'cache' });
-                useCatalogStore.getState().set({ utilities: true });
-              }),
-            },
-            {
-              label: 'Pin collection on SSD',
-              onClick: action(async () => {
-                await invoke('library_cache', { paths: await allPaths(), action: 'pin' });
-                useCatalogStore.getState().set({ utilities: true });
-              }),
-            },
-            {
-              label: 'Unpin collection',
-              onClick: action(async () => {
-                await invoke('library_cache', { paths: await allPaths(false), action: 'unpin' });
-              }),
-            },
+            ...(useCatalogStore
+              .getState()
+              .catalog?.storage?.sources.some((source) =>
+                canCacheSource(
+                  useCatalogStore.getState().catalog?.storage,
+                  source.path + '/photo',
+                  useCatalogStore.getState().catalog?.cache.directory,
+                ),
+              )
+              ? [
+                  {
+                    label: 'Cache collection on faster drive',
+                    onClick: action(async () => {
+                      await invoke('library_cache', { paths: await allPaths(), action: 'cache' });
+                      useCatalogStore.getState().set({ utilities: true });
+                    }),
+                  },
+                  {
+                    label: 'Pin collection on faster drive',
+                    onClick: action(async () => {
+                      await invoke('library_cache', { paths: await allPaths(), action: 'pin' });
+                      useCatalogStore.getState().set({ utilities: true });
+                    }),
+                  },
+                  {
+                    label: 'Unpin collection',
+                    onClick: action(async () => {
+                      await invoke('library_cache', { paths: await allPaths(false), action: 'unpin' });
+                    }),
+                  },
+                ]
+              : [{ label: 'Configure storage…', onClick: () => useCatalogStore.getState().set({ utilities: true }) }]),
           ]
         : []),
     ]);

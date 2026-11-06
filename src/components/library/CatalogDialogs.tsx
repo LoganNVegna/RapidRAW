@@ -8,6 +8,7 @@ import { useCatalogStore, Collection, Rule } from '../../store/useCatalogStore';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import Button from '../ui/Button';
+import StorageSetup from './StorageSetup';
 import Text from '../ui/Text';
 import { TextVariants, TextColors } from '../../types/typography';
 
@@ -31,7 +32,7 @@ export default function CatalogDialogs() {
   const [oldPath, setOldPath] = useState('');
   const [result, setResult] = useState('');
   const [deleteRequested, setDeleteRequested] = useState(false);
-  const [cacheLimits, setCacheLimits] = useState({ rawGib: 150, previewGib: 50, reserveGib: 100 });
+  const [cacheLimits, setCacheLimits] = useState({ rawGib: 20, previewGib: 10, reserveGib: 5 });
   useEffect(() => {
     if (catalog?.cache.limits) setCacheLimits(catalog.cache.limits);
   }, [catalog?.cache.limits]);
@@ -108,9 +109,7 @@ export default function CatalogDialogs() {
                 </div>
                 <div className="flex-1 space-y-3">
                   <Text variant={TextVariants.heading}>{t('catalog.prepareYourPhotoLibrary')}</Text>
-                  <Text color={TextColors.secondary}>
-                    {t('catalog.buildThumbnailsAndPreviewsOnTheSsdForSmoothBrowsing')}
-                  </Text>
+                  <Text color={TextColors.secondary}>{t('catalog.prepareLibraryDescription')}</Text>
                   <Button disabled={working || !roots.length} onClick={() => execute(() => job('prepare', roots))}>
                     {t('catalog.buildLibraryPreviews')}
                   </Button>
@@ -138,7 +137,7 @@ export default function CatalogDialogs() {
                             : j.kind === 'index'
                               ? 'Library scan'
                               : j.kind.startsWith('cache')
-                                ? 'SSD copies'
+                                ? 'Working copies'
                                 : 'Previews'}
                         </span>
                         <span className="text-xs text-text-secondary">
@@ -182,26 +181,27 @@ export default function CatalogDialogs() {
                   ))}
                 </div>
               ) : null}
+              <StorageSetup roots={roots} />
               <div className="border-t border-surface pt-5 flex gap-4">
                 <HardDrive size={22} className="text-text-secondary mt-1" />
                 <div className="flex-1 space-y-2">
-                  <Text variant={TextVariants.heading}>{t('catalog.ssdCache')}</Text>
+                  <Text variant={TextVariants.heading}>{t('catalog.workingCopies')}</Text>
                   <Text color={TextColors.secondary}>
-                    {gib(catalog?.cache.used)} / {gib(catalog?.cache.rawLimit || 150 * 1073741824)} ·{' '}
+                    {gib(catalog?.cache.used)} / {gib(catalog?.cache.rawLimit ?? 20 * 1073741824)} ·{' '}
                     {gib(catalog?.cache.pinned)} {t('catalog.pinned')}
                   </Text>
                   <div className="h-1.5 bg-surface rounded-full overflow-hidden">
                     <div
                       className="h-full bg-accent/70"
                       style={{
-                        width: `${Math.min(100, ((catalog?.cache.used || 0) / (catalog?.cache.rawLimit || 150 * 1073741824)) * 100)}%`,
+                        width: `${Math.min(100, ((catalog?.cache.used || 0) / Math.max(1, catalog?.cache.rawLimit ?? 20 * 1073741824)) * 100)}%`,
                       }}
                     />
                   </div>
                   <Text variant={TextVariants.small} color={TextColors.secondary}>
                     {t('catalog.previewsAndAnalysis')} {gib(catalog?.cache.previewUsed)} /{' '}
-                    {gib(catalog?.cache.previewLimit || 50 * 1073741824)}
-                    {t('catalog.freeSpaceReserve')} {gib(catalog?.cache.reserve || 100 * 1073741824)}.
+                    {gib(catalog?.cache.previewLimit ?? 10 * 1073741824)}
+                    {t('catalog.freeSpaceReserve')} {gib(catalog?.cache.reserve ?? 5 * 1073741824)}.
                   </Text>
                 </div>
               </div>

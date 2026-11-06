@@ -447,6 +447,7 @@ export interface Preset {
 }
 
 export interface Progress {
+  stage?: string;
   completed?: number;
   current?: number;
   total: number;

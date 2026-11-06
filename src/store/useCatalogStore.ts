@@ -44,7 +44,9 @@ export type Job = {
   current: string;
   error: string;
 };
+export type StorageLayout = { enabled: boolean; cacheKind: string; sources: Array<{ path: string; kind: string }> };
 export type Catalog = {
+  storage?: StorageLayout;
   collections: Collection[];
   counts: Record<string, number>;
   jobs: Job[];
@@ -94,6 +96,12 @@ type State = {
   query: Query;
   catalog?: Catalog;
   total: number;
+  loaded: number;
+  loading: boolean;
+  loadError?: string;
+  loadMore?: (retry?: boolean) => void;
+  previewPaths?: string[];
+  pendingAssetIndex?: number;
   utilities: boolean;
   edit: Partial<Collection> | null;
   detailPaths?: string[];
@@ -111,6 +119,8 @@ export const useCatalogStore = create<State>((set) => ({
   scopeRevision: 0,
   query: initialQuery,
   total: 0,
+  loaded: 0,
+  loading: false,
   utilities: false,
   edit: null,
   sessions: [],
@@ -123,5 +133,7 @@ export const useCatalogStore = create<State>((set) => ({
       resume: undefined,
       scopeRevision: state.scopeRevision + 1,
       pendingSelection: undefined,
+      pendingAssetIndex: undefined,
+      pendingAssetId: undefined,
     })),
 }));

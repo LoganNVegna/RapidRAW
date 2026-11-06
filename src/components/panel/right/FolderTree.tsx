@@ -70,6 +70,7 @@ interface FolderTreeProps {
 }
 
 interface TreeNodeProps {
+  rootLabel?: string;
   sectionId: string;
   expandedFolders: Set<string>;
   isExpanded: boolean;
@@ -496,6 +497,7 @@ function AlbumTreeNode({
 }
 
 function TreeNode({
+  rootLabel,
   sectionId,
   expandedFolders,
   isExpanded,
@@ -608,7 +610,9 @@ function TreeNode({
         </div>
 
         <span onDoubleClick={handleNameDoubleClick} className="min-w-0 flex-1 select-none">
-          <span className="block truncate">{node.name}</span>
+          <span className="block truncate" title={node.path}>
+            {rootLabel || node.name}
+          </span>
         </span>
 
         {typeof node.imageCount === 'number' && node.imageCount > 0 && (
@@ -1115,6 +1119,9 @@ export default function FolderTree({
                                 expandedFolders={effectiveExpandedFolders}
                                 isExpanded={effectiveExpandedFolders.has(tree.path)}
                                 node={tree}
+                                rootLabel={
+                                  /^[A-Za-z]:/.test(tree.path) ? tree.path.slice(0, 2) + ' / ' + tree.name : tree.path
+                                }
                                 onContextMenu={onContextMenu}
                                 onFolderSelect={onFolderSelect}
                                 onToggle={onToggleFolder}

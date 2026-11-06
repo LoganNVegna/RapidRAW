@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import CullingCompare from '../library/CullingCompare';
+import { toast } from 'react-toastify';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle, XCircle, Loader2, Users } from 'lucide-react';
+import { CheckCircle, XCircle, Loader2, Users, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CullingSettings, CullingSuggestions, Invokes, Progress } from '../ui/AppProperties';
 import Button from '../ui/Button';
@@ -25,36 +27,56 @@ interface CullingModalProps {
   onError(error: string): void;
 }
 
-function ImageThumbnail({ path, thumbnails, isSelected, onToggle, children }: any) {
-  const thumbnailUrl = thumbnails[path];
+function ImageThumbnail({
+  path,
+  thumbnails,
+  isSelected,
+  onToggle,
+  children,
+}: {
+  path: string;
+  thumbnails: Record<string, string>;
+  isSelected: boolean;
+  onToggle: () => void;
+  children?: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  const filename = path.split(/[\\/]/).at(-1);
   return (
     <div
-      className={`relative group rounded-md overflow-hidden border-2 transition-colors cursor-pointer ${
-        isSelected ? 'border-accent' : 'border-transparent hover:border-surface'
-      }`}
-      onClick={onToggle}
+      className={`rounded-lg overflow-hidden border-2 min-w-0 ${isSelected ? 'border-red-400' : 'border-transparent'} bg-bg-secondary`}
     >
-      <img
-        src={thumbnailUrl}
-        alt={path}
-        className={`w-full h-full object-cover transition-opacity ${isSelected ? 'opacity-100' : 'opacity-75 group-hover:opacity-100'}`}
-      />
-      <div
-        className={`absolute inset-0 bg-black/50 transition-opacity ${
-          isSelected ? 'opacity-0' : 'opacity-100 group-hover:opacity-0'
-        }`}
-      />
-      <div className="absolute top-2 right-2">{isSelected && <CheckCircle size={16} className="text-accent" />}</div>
-      {children && (
-        <Text
-          as="div"
-          variant={TextVariants.small}
-          color={TextColors.white}
-          className="absolute bottom-0 left-0 right-0 p-1 bg-black/60"
+      <button
+        type="button"
+        aria-pressed={isSelected}
+        aria-label={filename}
+        onClick={onToggle}
+        className="relative block w-full aspect-[3/2] bg-black/30 group focus-visible:outline focus-visible:outline-accent"
+      >
+        {thumbnails[path] ? (
+          <img src={thumbnails[path]} alt={filename} className="w-full h-full object-contain" />
+        ) : (
+          <Loader2 className="absolute inset-0 m-auto animate-spin text-text-secondary" />
+        )}
+        {isSelected && (
+          <span className="absolute top-2 right-2 rounded-full bg-black/70 p-1">
+            <XCircle size={20} className="text-red-400" />
+          </span>
+        )}
+      </button>
+      <div className="p-2 space-y-2 text-xs">
+        <div title={path} className="truncate text-text-secondary">
+          {filename}
+        </div>
+        <button
+          type="button"
+          onClick={onToggle}
+          className={`w-full rounded-md px-2 py-1.5 ${isSelected ? 'bg-red-400/15 text-red-300' : 'bg-surface text-text-secondary hover:text-text-primary'}`}
         >
-          {children}
-        </Text>
-      )}
+          {isSelected ? t('catalog.selectedForRejection') : t('catalog.markForRejection')}
+        </button>
+        <div className="space-y-2">{children}</div>
+      </div>
     </div>
   );
 }
@@ -73,12 +95,16 @@ export default function CullingModal({
   const { t } = useTranslation();
   const [isMounted, setIsMounted] = useState(false);
   const [show, setShow] = useState(false);
-  const thumbnails = useProcessStore((s) => (isMounted ? s.thumbnails : EMPTY_THUMBNAILS));
+  const smallThumbnails = useProcessStore((s) => (isMounted ? s.thumbnails : EMPTY_THUMBNAILS));
+  const mediumThumbnails = useProcessStore((s) => (isMounted ? s.mediumThumbnails : EMPTY_THUMBNAILS));
+  const thumbnails = useMemo(() => ({ ...smallThumbnails, ...mediumThumbnails }), [smallThumbnails, mediumThumbnails]);
+  const [comparison, setComparison] = useState<string[] | null>(null);
   const [stage, setStage] = useState<'settings' | 'progress' | 'results'>('settings');
   const requestId = useRef(0);
   const onClose = () => {
+    setComparison(null);
     requestId.current += 1;
-    if (stage === 'progress') invoke(Invokes.CancelCulling).catch(console.error);
+    if (stage === 'progress') invoke(Invokes.CancelCulling).catch((error) => toast.error(String(error)));
     closeRequested();
   };
 
@@ -101,7 +127,7 @@ export default function CullingModal({
   const [dismissedBlurry, setDismissedBlurry] = useState(new Set<string>());
   useEffect(() => setDismissedBlurry(new Set()), [suggestions]);
   useEffect(() => setPage(0), [activeTab, suggestions]);
-  const visibleGroups = groups.slice(page * 10, page * 10 + 10);
+  const visibleGroups = groups.slice(page, page + 1);
   const filteredBlurry = (suggestions?.blurryImages || []).filter((i) => !dismissedBlurry.has(i.path));
   const visibleBlurry = filteredBlurry.slice(page * 50, page * 50 + 50);
   const visiblePaths = (
@@ -113,13 +139,24 @@ export default function CullingModal({
     if (stage !== 'results' || !visiblePaths) return;
     let cancelled = false;
     void (async () => {
-      const paths = visiblePaths.split('\n').filter((p) => !useProcessStore.getState().thumbnails[p]);
+      const paths = visiblePaths.split('\n').filter((p) => !useProcessStore.getState().mediumThumbnails[p]);
       for (let i = 0; i < paths.length && !cancelled; i += 250) {
-        const previews = await invoke<Record<string, { smallPreview: string }>>('library_previews', {
-          paths: paths.slice(i, i + 250),
-        });
+        const previews = await invoke<Record<string, { smallPreview: string; mediumPreview?: string }>>(
+          'library_previews',
+          {
+            paths: paths.slice(i, i + 250),
+          },
+        );
         if (cancelled) return;
         useProcessStore.getState().setProcess((s) => ({
+          mediumThumbnails: {
+            ...s.mediumThumbnails,
+            ...Object.fromEntries(
+              Object.entries(previews)
+                .filter(([, value]) => value.mediumPreview)
+                .map(([path, value]) => [path, convertFileSrc(value.mediumPreview!)]),
+            ),
+          },
           thumbnails: {
             ...s.thumbnails,
             ...Object.fromEntries(
@@ -128,14 +165,14 @@ export default function CullingModal({
           },
         }));
       }
-    })().catch(console.error);
+    })().catch((error) => toast.error(String(error)));
     return () => {
       cancelled = true;
     };
   }, [visiblePaths, stage]);
-  const pages = Math.ceil(activeTab === 'similar' ? groups.length / 10 : filteredBlurry.length / 50);
+  const pages = Math.ceil(activeTab === 'similar' ? groups.length : filteredBlurry.length / 50);
   useEffect(() => {
-    if (page >= pages && pages > 0) setPage(pages - 1);
+    if (page >= pages) setPage(Math.max(0, pages - 1));
   }, [pages, page]);
 
   useEffect(() => {
@@ -220,6 +257,83 @@ export default function CullingModal({
 
   const numSimilar = suggestions?.similarGroups.reduce((acc, group) => acc + group.duplicates.length, 0) || 0;
   const numBlurry = suggestions?.blurryImages.length || 0;
+
+  useEffect(() => {
+    if (!isOpen || stage !== 'results' || comparison) return;
+    const handler = (event: KeyboardEvent) => {
+      if (
+        (event.target as HTMLElement).closest('input,select,textarea') ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+      )
+        return;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setPage((current) => Math.max(0, Math.min(pages - 1, current + (event.key === 'ArrowRight' ? 1 : -1))));
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [isOpen, stage, pages, comparison]);
+
+  const navigation = pages > 0 && (
+    <div className="flex flex-wrap items-center gap-3 py-3 border-b border-surface">
+      <button
+        aria-label={t(activeTab === 'similar' ? 'catalog.previousGroup' : 'catalog.previousPage')}
+        className="p-2 rounded-md hover:bg-surface disabled:opacity-30"
+        disabled={page === 0}
+        onClick={() => setPage((current) => current - 1)}
+      >
+        <ChevronLeft size={20} />
+      </button>
+      <label className="flex items-center gap-2 text-sm">
+        {t(activeTab === 'similar' ? 'catalog.jumpToGroup' : 'catalog.previousPage')}
+        <input
+          aria-label={t('catalog.jumpToGroup')}
+          type="number"
+          min={1}
+          max={pages}
+          value={page + 1}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            if (value >= 1 && value <= pages) setPage(value - 1);
+          }}
+          className="w-20 rounded-md bg-surface px-2 py-1 text-center"
+        />
+        / {pages.toLocaleString()}
+      </label>
+      <button
+        aria-label={t(activeTab === 'similar' ? 'catalog.nextGroup' : 'catalog.nextPage')}
+        className="p-2 rounded-md hover:bg-surface disabled:opacity-30"
+        disabled={page + 1 >= pages}
+        onClick={() => setPage((current) => current + 1)}
+      >
+        <ChevronRight size={20} />
+      </button>
+      {activeTab === 'similar' && visibleGroups[0] && (
+        <button
+          className="ml-auto text-sm px-3 py-2 rounded-md hover:bg-surface"
+          onClick={() => {
+            const paths = visibleGroups[0].duplicates.map((image) => image.path);
+            setSelectedRejects((current) => {
+              const next = new Set(current);
+              const clear = paths.every((path) => current.has(path));
+              paths.forEach((path) => (clear ? next.delete(path) : next.add(path)));
+              return next;
+            });
+          }}
+        >
+          {t(
+            visibleGroups[0].duplicates.every((image) => selectedRejects.has(image.path))
+              ? 'catalog.clearGroupSelection'
+              : 'catalog.selectGroupAlternatives',
+          )}
+        </button>
+      )}
+    </div>
+  );
 
   const renderSettings = () => (
     <>
@@ -309,17 +423,18 @@ export default function CullingModal({
   );
 
   const renderProgress = () => (
-    <div className="flex flex-col items-center justify-center h-48">
+    <div className="flex flex-col items-center justify-center min-h-48 gap-3">
       <Loader2 className="w-16 h-16 text-accent animate-spin" />
       <p className="mt-4 text-text-primary">{progress?.stage || t('modals.culling.starting')}</p>
       {progress && progress.total > 0 && (
         <div className="w-full bg-surface rounded-full h-2.5 mt-2">
           <div
             className="bg-accent h-2.5 rounded-full"
-            style={{ width: `${(progress.current / progress.total) * 100}%` }}
+            style={{ width: `${((progress.current ?? progress.completed ?? 0) / progress.total) * 100}%` }}
           />
         </div>
       )}
+      <Button onClick={onClose}>{t('modals.culling.cancel')}</Button>
     </div>
   );
 
@@ -369,7 +484,7 @@ export default function CullingModal({
         {suggestions.failedPaths.length > 0 && (
           <Text role="status">{t('modals.culling.partialFailure', { count: suggestions.failedPaths.length })}</Text>
         )}
-        <div className="border-b border-surface mb-4">
+        <div className="border-b border-surface shrink-0">
           <nav className="-mb-px flex space-x-4" aria-label="Tabs">
             {numSimilar > 0 && (
               <button
@@ -381,7 +496,7 @@ export default function CullingModal({
                 } whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm`}
               >
                 {t('modals.culling.similarGroupsTab')}{' '}
-                <span className="bg-surface text-text-secondary rounded-full px-2 py-0.5 text-xs">{numSimilar}</span>
+                <span className="bg-surface text-text-secondary rounded-full px-2 py-0.5 text-xs">{groups.length}</span>
               </button>
             )}
             {numBlurry > 0 && (
@@ -400,7 +515,11 @@ export default function CullingModal({
           </nav>
         </div>
 
-        <div className="bg-bg-primary rounded-lg p-2 h-[50vh] overflow-y-auto">
+        {navigation}
+        <div
+          key={activeTab + page}
+          className="bg-bg-primary rounded-lg p-3 flex-1 min-h-0 overflow-y-auto custom-scrollbar"
+        >
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -411,7 +530,7 @@ export default function CullingModal({
             >
               {activeTab === 'similar' && (
                 <div className="space-y-4">
-                  {visibleGroups.map((group, index) => (
+                  {visibleGroups.map((group) => (
                     <div key={group.id} className="bg-surface rounded-lg p-3">
                       <div className="flex gap-2 mb-2">
                         <button
@@ -434,23 +553,23 @@ export default function CullingModal({
                         </button>
                       </div>
                       <Text variant={TextVariants.heading} className="mb-2">
-                        {t('modals.culling.groupHeader', { index: index + 1 })}
+                        {t('modals.culling.groupHeader', { index: page + 1 })}
                       </Text>
                       <Text variant={TextVariants.small} className="mb-2">
                         {t('modals.culling.provisionalNotice')}
                         {group.reasons.includes('detail') && ` ${t('modals.culling.detailReason')}`}
                         {group.reasons.includes('exposure') && ` ${t('modals.culling.exposureReason')}`}
                       </Text>
-                      <div className="grid grid-cols-[1fr_3fr] gap-3">
+                      <div className="grid grid-cols-1 md:grid-cols-[minmax(200px,1fr)_minmax(0,3fr)] gap-5">
                         <div>
                           <Text variant={TextVariants.label} className="mb-1">
                             {t('modals.culling.suggestedKeeper')}
                           </Text>
-                          <div className="relative rounded-md overflow-hidden border-2 border-green-500">
+                          <div className="relative rounded-md overflow-hidden border-2 border-green-500 aspect-[3/2] bg-black/30">
                             <img
                               src={thumbnails[group.representative.path]}
-                              alt="Representative"
-                              className="w-full h-full object-cover"
+                              alt={group.representative.path.split(/[\\/]/).at(-1)}
+                              className="w-full h-full object-contain"
                             />
                             <Text
                               as="div"
@@ -461,12 +580,15 @@ export default function CullingModal({
                               {t('modals.culling.score', { score: group.representative.qualityScore.toFixed(2) })}
                             </Text>
                           </div>
+                          <p className="truncate text-xs text-text-secondary mt-2" title={group.representative.path}>
+                            {group.representative.path.split(/[\\/]/).at(-1)}
+                          </p>
                         </div>
                         <div>
                           <Text variant={TextVariants.label} className="mb-1">
                             {t('modals.culling.similarAlternatives', { count: group.duplicates.length })}
                           </Text>
-                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                          <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-3 items-start">
                             {group.duplicates.map((dup) => (
                               <ImageThumbnail
                                 key={dup.path}
@@ -476,6 +598,12 @@ export default function CullingModal({
                                 onToggle={() => handleToggleReject(dup.path)}
                               >
                                 {t('modals.culling.score', { score: dup.qualityScore.toFixed(2) })}
+                                <button
+                                  className="block w-full rounded bg-surface px-2 py-1.5"
+                                  onClick={() => setComparison([group.representative.path, dup.path])}
+                                >
+                                  {t('catalog.compareFrames')}
+                                </button>
                                 <button
                                   title="Exclude this frame from the group"
                                   className="block w-full rounded bg-bg-primary px-1 py-1 text-text-primary"
@@ -538,7 +666,7 @@ export default function CullingModal({
                 </div>
               )}
               {activeTab === 'blurry' && (
-                <div className="grid grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-3 items-start">
                   {visibleBlurry.map((img) => (
                     <ImageThumbnail
                       key={img.path}
@@ -568,7 +696,7 @@ export default function CullingModal({
                             .catch(console.error);
                         }}
                       >
-                        Keep intentional effect
+                        {t('catalog.keepIntentionalEffect')}
                       </button>
                     </ImageThumbnail>
                   ))}
@@ -578,30 +706,7 @@ export default function CullingModal({
           </AnimatePresence>
         </div>
 
-        <div className="flex justify-between items-center gap-3 mt-6">
-          {pages > 1 && (
-            <div className="flex gap-2 items-center text-sm">
-              <button
-                aria-label={t('catalog.previousPage')}
-                disabled={!page}
-                className="disabled:opacity-30"
-                onClick={() => setPage((p) => p - 1)}
-              >
-                ←
-              </button>
-              <span>
-                {page + 1} / {pages}
-              </span>
-              <button
-                aria-label={t('catalog.nextPage')}
-                disabled={page + 1 >= pages}
-                className="disabled:opacity-30"
-                onClick={() => setPage((p) => p + 1)}
-              >
-                →
-              </button>
-            </div>
-          )}
+        <div className="flex flex-wrap justify-between items-center gap-3 pt-4 shrink-0">
           <div className="flex-1">
             <Text variant={TextVariants.small}>{t('modals.culling.reviewSelectionNotice')}</Text>
           </div>
@@ -647,11 +752,24 @@ export default function CullingModal({
       aria-modal="true"
     >
       <div
-        className={`bg-surface rounded-lg shadow-xl p-6 w-full max-w-3xl transform transition-all duration-300 ease-out ${
+        className={`relative bg-bg-secondary rounded-xl shadow-xl p-5 m-4 w-full ${stage === 'results' ? 'max-w-6xl h-[90vh] flex flex-col' : 'max-w-xl max-h-[90vh] overflow-y-auto'} transform transition-all duration-300 ease-out ${
           show ? 'scale-100 opacity-100 translate-y-0' : 'scale-95 opacity-0 -translate-y-4'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
+        <button
+          aria-label={t('catalog.close')}
+          className="absolute top-3 right-3 p-2 rounded-md hover:bg-surface text-text-secondary z-10"
+          onClick={onClose}
+        >
+          <X size={20} />
+        </button>
+        {comparison && (
+          <CullingCompare
+            frames={comparison.map((path) => ({ path, url: thumbnails[path] }))}
+            close={() => setComparison(null)}
+          />
+        )}
         {renderContent()}
       </div>
     </div>

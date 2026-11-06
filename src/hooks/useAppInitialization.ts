@@ -1,3 +1,5 @@
+import { useCatalogStore } from '../store/useCatalogStore';
+import { isFolderPath } from '../components/library/catalogSession';
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
@@ -57,6 +59,8 @@ export const useAppInitialization = ({
   setLibraryViewMode,
 }: UseAppInitializationProps) => {
   const isInitialMount = useRef(true);
+  const catalogActive = useCatalogStore((s) => s.active);
+  const catalogQuery = useCatalogStore((s) => s.query);
   const { i18n } = useTranslation();
 
   const {
@@ -240,7 +244,12 @@ export const useAppInitialization = ({
 
         if (!isAndroid && rootFolders.length > 0) {
           const currentPath = settings.lastFolderState?.currentFolderPath || rootFolders[0];
-          const isAlbum = currentPath.startsWith('Album: ');
+          const isVirtual = !!settings.lastFolderState?.catalogQuery || !isFolderPath(currentPath);
+          const indexed = !isVirtual
+            ? await invoke<{ total: number }>('library_query', {
+                query: { view: 'all', folder: currentPath, recursive: true, limit: 1 },
+              }).catch(() => undefined)
+            : undefined;
           const command =
             settings.libraryViewMode === LibraryViewMode.Recursive
               ? Invokes.ListImagesRecursive
@@ -253,8 +262,9 @@ export const useAppInitialization = ({
               paths: rootFolders,
               expandedFolders: settings.lastFolderState?.expandedFolders ?? rootFolders,
               showImageCounts: settings.enableFolderImageCounts || settings.folderTreeSort?.key === 'imageCount',
-            }),
-            images: isAlbum ? undefined : invoke(command, { path: currentPath }),
+            }).catch(() => []),
+            images:
+              isVirtual || indexed?.total ? undefined : invoke(command, { path: currentPath }).catch(() => undefined),
           };
         }
 
@@ -389,24 +399,37 @@ export const useAppInitialization = ({
       expandedAlbumGroups: [],
     };
 
-    const pathChanged = prevFolderState.currentFolderPath !== currentFolderPath;
+    const physicalPath = catalogActive ? catalogQuery.folder || null : currentFolderPath;
+    const savedQuery = catalogActive ? { ...catalogQuery, offset: 0 } : null;
+    const queryChanged = JSON.stringify(prevFolderState.catalogQuery || null) !== JSON.stringify(savedQuery);
+    const pathChanged = prevFolderState.currentFolderPath !== physicalPath;
     const expandedChanged = JSON.stringify(prevFolderState.expandedFolders || []) !== JSON.stringify(currentExpanded);
     const albumChanged = prevFolderState.activeAlbumId !== activeAlbumId;
     const albumExpandedChanged =
       JSON.stringify(prevFolderState.expandedAlbumGroups || []) !== JSON.stringify(currentExpandedAlbums);
 
-    if (pathChanged || expandedChanged || albumChanged || albumExpandedChanged) {
+    if (pathChanged || queryChanged || expandedChanged || albumChanged || albumExpandedChanged) {
       handleSettingsChange({
         ...appSettings,
         lastFolderState: {
-          currentFolderPath,
+          currentFolderPath: physicalPath,
+          catalogQuery: savedQuery,
           expandedFolders: currentExpanded,
           activeAlbumId,
           expandedAlbumGroups: currentExpandedAlbums,
         },
       });
     }
-  }, [currentFolderPath, expandedFolders, activeAlbumId, expandedAlbumGroups, appSettings, handleSettingsChange]);
+  }, [
+    currentFolderPath,
+    catalogActive,
+    catalogQuery,
+    expandedFolders,
+    activeAlbumId,
+    expandedAlbumGroups,
+    appSettings,
+    handleSettingsChange,
+  ]);
 
   useEffect(() => {
     if (!appSettings) return;

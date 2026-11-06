@@ -673,12 +673,12 @@ export const useKeyboardShortcuts = ({
             current &&
             !next &&
             catalog.active &&
-            catalog.query.offset + catalog.query.limit < catalog.total
+            catalog.loaded < catalog.total
           ) {
             catalog.set({
-              query: { ...catalog.query, offset: catalog.query.offset + catalog.query.limit },
-              pendingSelection: 'first',
+              pendingAssetIndex: state.library.imageList.length,
             });
+            catalog.loadMore?.();
           }
           if (
             state.settings.appSettings?.cullAutoAdvance &&

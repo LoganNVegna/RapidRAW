@@ -1,3 +1,4 @@
+import CatalogEmptyState from '../library/CatalogEmptyState';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { open } from '@tauri-apps/plugin-shell';
@@ -174,7 +175,9 @@ function ThumbnailProgressCount() {
 
 export default function MainLibrary(props: MainLibraryProps) {
   const catalogActive = useCatalogStore((s) => s.active);
-  const libraryJobs=useCatalogStore(s=>s.catalog?.jobs.some(j=>j.status==='running'||j.status==='queued'));
+  const libraryJobs = useCatalogStore((s) =>
+    s.catalog?.jobs.some((j) => j.status === 'running' || j.status === 'queued'),
+  );
   const { t } = useTranslation();
   const setUI = useUIStore((state) => state.setUI);
   const [appVersion, setAppVersion] = useState('');
@@ -636,7 +639,7 @@ export default function MainLibrary(props: MainLibraryProps) {
                   onClick={() => useCatalogStore.getState().set({ utilities: true })}
                 >
                   <Database size={20} />
-                  {libraryJobs&&<span className="absolute right-2 top-2 w-1.5 h-1.5 rounded-full bg-accent"/>}
+                  {libraryJobs && <span className="absolute right-2 top-2 w-1.5 h-1.5 rounded-full bg-accent" />}
                 </Button>
                 {props.isAndroid && (
                   <Button
@@ -702,17 +705,8 @@ export default function MainLibrary(props: MainLibraryProps) {
           </Text>
           <Text className="mt-2">{t('library.status.moment')}</Text>
         </div>
-      ) : catalogActive && !searchCriteria.tags.length && !searchCriteria.text ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center gap-3 p-8">
-          <Database size={32} className="text-text-secondary mb-1" />
-          <Text variant={TextVariants.heading}>{t('catalog.yourPhotoLibrary')}</Text>
-          <Text color={TextColors.secondary} className="max-w-sm">
-            {t('catalog.preparePreviewsOnTheSsdToBrowseYourPhotosAcross')}
-          </Text>
-          <Button className="mt-2" onClick={() => useCatalogStore.getState().set({ utilities: true })}>
-            {t('catalog.prepareLibrary')}
-          </Button>
-        </div>
+      ) : catalogActive ? (
+        <CatalogEmptyState />
       ) : searchCriteria.tags.length > 0 || searchCriteria.text ? (
         <div
           className="flex-1 flex flex-col items-center justify-center text-text-secondary text-center"

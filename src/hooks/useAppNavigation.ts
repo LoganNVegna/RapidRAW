@@ -1,3 +1,5 @@
+import { restoreCatalogQuery } from '../components/library/catalogSession';
+import type { Catalog } from '../store/useCatalogStore';
 import { useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -471,8 +473,9 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
           });
         }
       } catch (err) {
-        console.error('Failed to load folder contents:', err);
-        toast.error('Failed to load images from the selected folder.');
+        if (useLibraryStore.getState().currentFolderPath !== path) return;
+        console.error('Failed to load folder contents:', { path, error: String(err) });
+        toast.error('Failed to load images from the selected folder: ' + path);
       } finally {
         if (useLibraryStore.getState().currentFolderPath === path) {
           useLibraryStore.getState().setLibrary({ isViewLoading: false });
@@ -669,6 +672,24 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
         console.error('Failed to restore folder trees:', err);
       } finally {
         setLibrary({ isTreeLoading: false });
+      }
+
+      const catalog = await invoke<Catalog>('library_state').catch(() => undefined);
+      const restored = restoreCatalogQuery(folderState, catalog);
+      if (restored) {
+        const state = useCatalogStore.getState();
+        state.set({ active: true, query: restored, catalog, scopeRevision: state.scopeRevision + 1 });
+        setLibrary({
+          currentFolderPath:
+            restored.folder || catalog?.collections.find((c) => c.id === restored.collectionId)?.name || 'Library',
+          activeAlbumId: null,
+          imageList: [],
+          multiSelectedPaths: [],
+          libraryActivePath: null,
+          libraryScrollTop: 0,
+        });
+        useUIStore.getState().setUI({ activeView: 'library' });
+        return;
       }
 
       let preloadedImages: ImageFile[] | undefined = undefined;
