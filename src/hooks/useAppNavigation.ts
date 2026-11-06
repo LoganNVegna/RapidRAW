@@ -1,3 +1,4 @@
+import { isWithinSource } from '../components/library/sourceVisibility';
 import { restoreCatalogQuery } from '../components/library/catalogSession';
 import type { Catalog } from '../store/useCatalogStore';
 import { useCallback } from 'react';
@@ -595,6 +596,15 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
       }
 
       if (selectedPath) {
+        if (
+          useCatalogStore
+            .getState()
+            .catalog?.excludedSources?.some(
+              (source) =>
+                source.path.replaceAll('\\', '/').toLowerCase() === selectedPath.replaceAll('\\', '/').toLowerCase(),
+            )
+        )
+          await invoke('library_source_visibility', { path: selectedPath, excluded: false });
         if (!rootPaths.includes(selectedPath)) {
           const newRootPaths = [...rootPaths, selectedPath];
           setLibrary({ rootPaths: newRootPaths });
@@ -640,7 +650,12 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
       if (rootFolders.length === 0) return;
 
       const folderState = appSettings?.lastFolderState;
-      const pathToSelect = folderState?.currentFolderPath || rootFolders[0];
+      const candidate = folderState?.currentFolderPath || rootFolders[0];
+      const pathToSelect = useCatalogStore
+        .getState()
+        .catalog?.excludedSources?.some((source) => isWithinSource(candidate, source.path))
+        ? rootFolders[0]
+        : candidate;
 
       setLibrary({ rootPaths: rootFolders });
 
@@ -677,6 +692,10 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
       const catalog = await invoke<Catalog>('library_state').catch(() => undefined);
       const restored = restoreCatalogQuery(folderState, catalog);
       if (restored) {
+        if (catalog?.excludedSources?.some((source) => isWithinSource(restored.folder, source.path))) {
+          restored.folder = undefined;
+          restored.view = 'all';
+        }
         const state = useCatalogStore.getState();
         state.set({ active: true, query: restored, catalog, scopeRevision: state.scopeRevision + 1 });
         setLibrary({

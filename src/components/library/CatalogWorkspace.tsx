@@ -88,7 +88,13 @@ export default function CatalogWorkspace() {
         if (!mounted.current || !activeRef.current) return;
         useCatalogStore
           .getState()
-          .set({ total: state.total, loaded: state.assets.length, loading: state.loading, loadError: state.error });
+          .set({
+            total: state.total,
+            loaded: state.assets.length,
+            loading: state.loading,
+            loadError: state.error,
+            fileTotal: state.fileTotal,
+          });
         if (state.loading || state.error) return;
         const assets = state.assets;
         useLibraryStore.getState().setLibrary({
@@ -291,6 +297,12 @@ export default function CatalogWorkspace() {
           <div className="flex items-center gap-3">
             <span>
               {total.toLocaleString()} {t('catalog.photos')}
+              {(useCatalogStore.getState().fileTotal || 0) > total && (
+                <span title={t('catalog.groupCopiesHint')}>
+                  {' '}
+                  · {t('catalog.copiesGrouped', { count: (useCatalogStore.getState().fileTotal || total) - total })}
+                </span>
+              )}
               {search.text || constraints.length || filter.colors.length || search.tags.length
                 ? ' · Filters active'
                 : ''}
@@ -323,6 +335,31 @@ export default function CatalogWorkspace() {
             )}
           </div>
           <div className="flex items-center gap-3">
+            {query.copyKey ? (
+              <button
+                className="hover:text-text-primary"
+                onClick={() =>
+                  useCatalogStore
+                    .getState()
+                    .set({ query: { ...query, copyKey: undefined, groupCopies: undefined, offset: 0 } })
+                }
+              >
+                {t('catalog.backToGroupedView')}
+              </button>
+            ) : (
+              <label className="flex items-center gap-2" title={t('catalog.groupCopiesHint')}>
+                <input
+                  type="checkbox"
+                  checked={useCatalogStore.getState().catalog?.groupCopies || false}
+                  onChange={(event) => {
+                    void invoke('library_copy_view', { grouped: event.target.checked })
+                      .then(refresh)
+                      .catch((error) => toast.error(String(error)));
+                  }}
+                />
+                {t('catalog.groupLikelyCopies')}
+              </label>
+            )}
             <button
               data-tooltip={t('catalog.undoLibraryDecision')}
               onClick={() =>

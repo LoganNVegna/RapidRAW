@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { FilterCriteria, SortCriteria, ImageFile } from '../components/ui/AppProperties';
-export type Rule = { field: string; operator: string; value: string };
+export type Rule = { field: string; operator: string; value: string; key?: string; mode?: string; rules?: Rule[] };
 export type Collection = {
   id: string;
   name: string;
@@ -17,10 +17,14 @@ export type Asset = ImageFile & {
   smallPreview?: string;
   mediumPreview?: string;
   memberships: string[];
+  copyCount?: number;
+  copyKey?: string;
 };
 export type Query = {
   view: string;
   collectionId?: string;
+  groupCopies?: boolean;
+  copyKey?: string;
   folder?: string;
   recursive?: boolean;
   search: string;
@@ -47,6 +51,8 @@ export type Job = {
 export type StorageLayout = { enabled: boolean; cacheKind: string; sources: Array<{ path: string; kind: string }> };
 export type Catalog = {
   storage?: StorageLayout;
+  groupCopies?: boolean;
+  excludedSources?: Array<{ path: string; count: number }>;
   collections: Collection[];
   counts: Record<string, number>;
   jobs: Job[];
@@ -96,6 +102,7 @@ type State = {
   query: Query;
   catalog?: Catalog;
   total: number;
+  fileTotal?: number;
   loaded: number;
   loading: boolean;
   loadError?: string;

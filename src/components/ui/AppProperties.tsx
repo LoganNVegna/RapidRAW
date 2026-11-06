@@ -402,6 +402,8 @@ export interface Folder {
 
 export interface ImageFile {
   assetId?: string;
+  copyCount?: number;
+  copyKey?: string;
   available?: boolean;
   review?: string;
   memberships?: string[];

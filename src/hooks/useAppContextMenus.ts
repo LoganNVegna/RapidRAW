@@ -1,3 +1,4 @@
+import { setSourceVisible } from '../components/library/sourceVisibility';
 import { useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -1065,7 +1066,7 @@ export function useAppContextMenus(latestProps: UseAppContextMenusProps) {
         return;
       }
 
-      const { rootPaths, currentFolderPath, folderTrees, setLibrary } = useLibraryStore.getState();
+      const { rootPaths, currentFolderPath, setLibrary } = useLibraryStore.getState();
       const { copiedFilePaths, setProcess } = useProcessStore.getState();
       const { appSettings, handleSettingsChange } = useSettingsStore.getState();
       const { setUI } = useUIStore.getState();
@@ -1088,50 +1089,9 @@ export function useAppContextMenus(latestProps: UseAppContextMenusProps) {
           ? [
               {
                 icon: Trash2,
-                label: t('contextMenus.folders.removeRoot'),
-                isDestructive: true,
-                onClick: () => {
-                  const newRoots = rootPaths.filter((r: string) => r !== targetPath);
-                  const newFolderTrees = folderTrees.filter((t: any) => t.path !== targetPath);
-
-                  const isCurrentInTarget =
-                    currentFolderPath === targetPath ||
-                    currentFolderPath?.startsWith(targetPath + '/') ||
-                    currentFolderPath?.startsWith(targetPath + '\\');
-
-                  const updates: any = {
-                    rootPaths: newRoots,
-                    folderTrees: newFolderTrees,
-                  };
-
-                  if (isCurrentInTarget) {
-                    updates.currentFolderPath = null;
-                    updates.imageList = [];
-                    updates.libraryActivePath = null;
-                    updates.multiSelectedPaths = [];
-                    updates.selectionAnchorPath = null;
-                    props.handleBackToLibrary();
-                  }
-
-                  setLibrary(updates);
-
-                  const { appSettings, handleSettingsChange } = useSettingsStore.getState();
-                  if (appSettings) {
-                    const newSettings = { ...appSettings, rootFolders: newRoots } as any;
-                    if (newRoots.length === 0) {
-                      newSettings.lastRootPath = null;
-                      newSettings.lastFolderState = null;
-                    } else if (newSettings.lastRootPath === targetPath) {
-                      newSettings.lastRootPath = newRoots[0];
-                    }
-
-                    if (isCurrentInTarget) {
-                      newSettings.lastFolderState = null;
-                    }
-
-                    handleSettingsChange(newSettings);
-                  }
-                },
+                label: t('catalog.excludeSource'),
+                isDestructive: false,
+                onClick: () => void setSourceVisible(targetPath, false).catch((error) => toast.error(String(error))),
               },
               { type: OPTION_SEPARATOR },
             ]

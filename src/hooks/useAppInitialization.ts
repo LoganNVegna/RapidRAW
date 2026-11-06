@@ -1,3 +1,5 @@
+import { isWithinSource } from '../components/library/sourceVisibility';
+import type { Catalog } from '../store/useCatalogStore';
 import { useCatalogStore } from '../store/useCatalogStore';
 import { isFolderPath } from '../components/library/catalogSession';
 import { useEffect, useRef } from 'react';
@@ -236,6 +238,21 @@ export const useAppInitialization = ({
           }
         }
 
+        const catalog = await invoke<Catalog>('library_state').catch(() => undefined);
+        if (catalog) useCatalogStore.getState().set({ catalog });
+        const exclusions = catalog?.excludedSources || [];
+        settings.rootFolders = (settings.rootFolders || []).filter(
+          (path: string) => !exclusions.some((source) => isWithinSource(path, source.path)),
+        );
+        if (settings.lastRootPath && exclusions.some((source) => isWithinSource(settings.lastRootPath, source.path)))
+          settings.lastRootPath = settings.rootFolders[0] || null;
+        setAppSettings({ ...settings });
+        setLibrary({
+          rootPaths: settings.rootFolders,
+          folderTrees: useLibraryStore
+            .getState()
+            .folderTrees.filter((tree) => !exclusions.some((source) => isWithinSource(tree.path, source.path))),
+        });
         const rootFolders = settings.rootFolders?.length
           ? settings.rootFolders
           : settings.lastRootPath

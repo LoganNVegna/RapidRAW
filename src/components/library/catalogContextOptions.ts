@@ -1,3 +1,4 @@
+import { useLibraryStore } from '../../store/useLibraryStore';
 import { canCacheSource } from './storageLayout';
 import { invoke } from '@tauri-apps/api/core';
 import { Check, Folder, HardDrive, ListStart, Pin, PinOff, Undo2, X } from 'lucide-react';
@@ -10,7 +11,18 @@ export function catalogContextOptions(paths: string[]): Option[] {
   if (!state.active) return [];
   const collection = state.catalog?.collections.find((c) => c.id === state.query.collectionId);
   const eligible = paths.filter((path) => canCacheSource(state.catalog?.storage, path, state.catalog?.cache.directory));
+  const copy = useLibraryStore.getState().imageList.find((asset) => asset.path === paths[0]);
   return [
+    ...(copy?.copyKey && (copy.copyCount || 0) > 1
+      ? [
+          {
+            label: 'Show likely copies',
+            icon: Folder,
+            onClick: () =>
+              state.set({ query: { ...state.query, copyKey: copy.copyKey, groupCopies: false, offset: 0 } }),
+          },
+        ]
+      : []),
     {
       label: 'Check native-resolution detail…',
       icon: Check,

@@ -1,3 +1,4 @@
+import { useCatalogStore } from '../../../store/useCatalogStore';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Ban,
@@ -58,6 +59,7 @@ const ThumbnailComponent = ({
 }: any) => {
   const { t } = useTranslation();
   const data = useProcessStore((s) => s.thumbnails[path]);
+  const copies = useLibraryStore((s) => s.imageList.find((image) => image.path === path));
   const memberships = useLibraryStore(
     (s) => s.imageList.find((image) => image.path === path)?.memberships?.length || 0,
   );
@@ -307,6 +309,21 @@ const ThumbnailComponent = ({
         )}
       />
 
+      {(copies?.copyCount || 0) > 1 && (
+        <button
+          aria-label={t('catalog.showCopies', { count: copies!.copyCount })}
+          title={t('catalog.groupCopiesHint')}
+          className="absolute bottom-7 left-2 z-20 rounded-md bg-black/75 text-white text-xs px-2 py-1"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            const state = useCatalogStore.getState();
+            state.set({ query: { ...state.query, copyKey: copies!.copyKey, groupCopies: false, offset: 0 } });
+          }}
+        >
+          {t('catalog.copyCount', { count: copies!.copyCount })}
+        </button>
+      )}
       {memberships > 0 && (
         <div className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-full h-5 px-1.5 bg-black/30 text-white text-[10px] pointer-events-none">
           <Album size={11} />
@@ -352,6 +369,7 @@ const ThumbnailComponent = ({
             <Text variant={TextVariants.small} color={TextColors.white}>
               {rating}
             </Text>
+
             <StarIcon size={12} className="text-white fill-white" />
           </div>
 
@@ -564,6 +582,7 @@ const ListItemComponent = ({
   isNextSelected,
 }: any) => {
   const { t } = useTranslation();
+  const copy = useLibraryStore((s) => s.imageList.find((image) => image.path === path));
   const data = useProcessStore((s) => s.thumbnails[path]);
   const exif = useLibraryStore((s) => s.exifByPath[path]);
   const cloudTooltip = useLibraryStore((s) =>
@@ -813,6 +832,20 @@ const ListItemComponent = ({
         <Text variant={TextVariants.small} className="truncate" weight={TextWeights.medium} color={TextColors.primary}>
           {baseName}
         </Text>
+        {(copy?.copyCount || 0) > 1 && (
+          <button
+            className="shrink-0 rounded bg-surface px-1.5 py-1 text-xs"
+            aria-label={t('catalog.showCopies', { count: copy!.copyCount })}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              const state = useCatalogStore.getState();
+              state.set({ query: { ...state.query, copyKey: copy!.copyKey, groupCopies: false, offset: 0 } });
+            }}
+          >
+            {t('catalog.copyCount', { count: copy!.copyCount })}
+          </button>
+        )}
         {isVirtualCopy && (
           <Text
             as="div"

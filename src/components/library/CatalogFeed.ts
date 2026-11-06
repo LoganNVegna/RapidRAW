@@ -1,6 +1,6 @@
 import type { Asset, Query } from '../../store/useCatalogStore';
 
-type Page = { assets: Asset[]; total: number };
+type Page = { assets: Asset[]; total: number; fileTotal?: number };
 export type FeedState = Page & { loading: boolean; error?: string };
 
 // Keep bounded database requests behind one continuous, virtualized photo list.
@@ -54,19 +54,21 @@ export class CatalogFeed {
     let offset = append ? this.offset : 0;
     let assets = append ? [...this.state.assets] : [];
     let total: number;
+    let fileTotal: number;
     this.publish({ ...this.state, loading: true, error: undefined });
     try {
       do {
         const page = await this.fetchPage({ ...query, offset, limit: Math.min(1000, target - offset) });
         if (generation !== this.generation) return;
         total = page.total;
+        fileTotal = page.fileTotal ?? page.total;
         assets.push(...page.assets);
         offset += page.assets.length;
         if (!page.assets.length) break;
       } while (offset < Math.min(target, total));
       this.offset = offset;
       assets = [...new Map(assets.map((asset) => [asset.assetId, asset])).values()];
-      this.publish({ assets, total, loading: false });
+      this.publish({ assets, total, fileTotal, loading: false });
     } catch (error) {
       if (generation === this.generation) this.publish({ ...this.state, loading: false, error: String(error) });
     }

@@ -1,10 +1,13 @@
+import SmartRuleBuilder, { validSmartRules } from './SmartRuleBuilder';
+import SourceVisibility from './LibrarySourcesPanel';
+import { isWithinSource } from './sourceVisibility';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Database, FolderOpen, HardDrive, Loader2, Pause, Play, Plus, X } from 'lucide-react';
+import { Database, FolderOpen, HardDrive, Loader2, Pause, Play, X } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { useCatalogStore, Collection, Rule } from '../../store/useCatalogStore';
+import { useCatalogStore, Collection } from '../../store/useCatalogStore';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import Button from '../ui/Button';
@@ -38,7 +41,10 @@ export default function CatalogDialogs() {
   }, [catalog?.cache.limits]);
   const appSettings = useSettingsStore((s) => s.appSettings);
   const configured = useLibraryStore((s) => s.rootPaths);
-  const roots = [...new Set([...configured, ...(appSettings?.rootFolders || []), ...(catalog?.roots || [])])];
+  const allRoots = [...new Set([...configured, ...(appSettings?.rootFolders || []), ...(catalog?.roots || [])])];
+  const roots = allRoots.filter(
+    (path) => !catalog?.excludedSources?.some((source) => isWithinSource(path, source.path)),
+  );
   const selected = useLibraryStore((s) => s.multiSelectedPaths);
   const close = () => useCatalogStore.getState().set({ utilities: false, edit: null });
   useEffect(() => {
@@ -69,8 +75,6 @@ export default function CatalogDialogs() {
         setWorking(false);
       }
     });
-  const rule = (i: number, value: Partial<Rule>) =>
-    setDraft((d) => ({ ...d, rules: d.rules?.map((r, j) => (i === j ? { ...r, ...value } : r)) }));
   if (!utilities && !edit) return null;
   return (
     <div
@@ -181,6 +185,7 @@ export default function CatalogDialogs() {
                   ))}
                 </div>
               ) : null}
+              <SourceVisibility roots={allRoots} />
               <StorageSetup roots={roots} />
               <div className="border-t border-surface pt-5 flex gap-4">
                 <HardDrive size={22} className="text-text-secondary mt-1" />
@@ -389,166 +394,11 @@ export default function CatalogDialogs() {
                 </label>
               </div>
               {draft.kind === 'smart' && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span>{t('catalog.match')}</span>
-                    <select
-                      aria-label={t('catalog.matchConditions')}
-                      className={`${field} !w-auto`}
-                      value={draft.mode}
-                      onChange={(e) => setDraft({ ...draft, mode: e.target.value })}
-                    >
-                      <option value="all">{t('catalog.allConditions')}</option>
-                      <option value="any">{t('catalog.anyCondition')}</option>
-                    </select>
-                  </div>
-                  {draft.rules?.map((r, i) => (
-                    <div key={i} className="flex gap-2">
-                      <select
-                        className={field}
-                        aria-label={`Rule ${i + 1} field`}
-                        value={r.field}
-                        onChange={(e) => {
-                          const name = e.target.value;
-                          rule(i, {
-                            field: name,
-                            operator: 'eq',
-                            value:
-                              name === 'rating'
-                                ? '3'
-                                : ['edited', 'available'].includes(name)
-                                  ? '1'
-                                  : name === 'flag'
-                                    ? 'pick'
-                                    : name === 'review'
-                                      ? 'unreviewed'
-                                      : name === 'label'
-                                        ? 'red'
-                                        : '',
-                          });
-                        }}
-                      >
-                        {[
-                          ['rating', t('catalog.rating')],
-                          ['flag', t('catalog.flag')],
-                          ['label', t('catalog.colorLabel')],
-                          ['tag', t('catalog.keyword')],
-                          ['date', t('catalog.captureDate')],
-                          ['camera', t('catalog.camera')],
-                          ['lens', t('catalog.lens')],
-                          ['edited', t('catalog.edited')],
-                          ['available', t('catalog.available')],
-                          ['review', t('catalog.reviewStatus')],
-                          ['path', t('catalog.folderPath')],
-                        ].map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        className={field}
-                        aria-label={`Rule ${i + 1} condition`}
-                        value={r.operator}
-                        onChange={(e) => rule(i, { operator: e.target.value })}
-                      >
-                        {(r.field === 'rating'
-                          ? [
-                              ['eq', 'is'],
-                              ['ne', 'is not'],
-                              ['gte', 'at least'],
-                              ['lte', 'at most'],
-                            ]
-                          : r.field === 'date'
-                            ? [
-                                ['eq', 'on'],
-                                ['ne', 'not on'],
-                                ['before', 'before'],
-                                ['after', 'after'],
-                              ]
-                            : ['flag', 'review', 'edited', 'available', 'label'].includes(r.field)
-                              ? [
-                                  ['eq', 'is'],
-                                  ['ne', 'is not'],
-                                ]
-                              : [
-                                  ['eq', 'is'],
-                                  ['ne', 'is not'],
-                                  ['contains', 'contains'],
-                                ]
-                        ).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                      {['rating', 'flag', 'review', 'edited', 'available', 'label'].includes(r.field) ? (
-                        <select
-                          className={field}
-                          aria-label={`Rule ${i + 1} value`}
-                          value={r.value}
-                          onChange={(e) => rule(i, { value: e.target.value })}
-                        >
-                          {(r.field === 'rating'
-                            ? [0, 1, 2, 3, 4, 5].map((n) => [String(n), `${n} stars`])
-                            : r.field === 'flag'
-                              ? [
-                                  ['pick', 'Pick'],
-                                  ['reject', 'Rejected'],
-                                  ['', 'Unflagged'],
-                                ]
-                              : r.field === 'review'
-                                ? [
-                                    ['unreviewed', 'Unreviewed'],
-                                    ['reviewed', 'Reviewed'],
-                                    ['deferred', 'Deferred'],
-                                  ]
-                                : r.field === 'label'
-                                  ? [
-                                      ['', 'No label'],
-                                      ...['red', 'yellow', 'green', 'blue', 'purple'].map((v) => [v, v]),
-                                    ]
-                                  : [
-                                      ['1', 'Yes'],
-                                      ['0', 'No'],
-                                    ]
-                          ).map(([value, label]) => (
-                            <option key={value} value={value}>
-                              {label}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type={r.field === 'date' ? 'date' : 'text'}
-                          className={field}
-                          aria-label={`Rule ${i + 1} value`}
-                          value={r.value}
-                          onChange={(e) => rule(i, { value: e.target.value })}
-                        />
-                      )}
-                      <button
-                        aria-label={t('catalog.removeCondition')}
-                        className="text-text-secondary"
-                        onClick={() => setDraft({ ...draft, rules: draft.rules?.filter((_, j) => j !== i) })}
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    className="flex gap-2 items-center py-2 text-text-secondary hover:text-text-primary"
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        rules: [...(draft.rules || []), { field: 'rating', operator: 'gte', value: '3' }],
-                      })
-                    }
-                  >
-                    <Plus size={15} />
-                    {t('catalog.addCondition')}
-                  </button>
-                </div>
+                <SmartRuleBuilder
+                  rules={draft.rules || []}
+                  mode={draft.mode || 'all'}
+                  onChange={(rules, mode) => setDraft({ ...draft, rules, mode })}
+                />
               )}
             </>
           )}
@@ -589,7 +439,9 @@ export default function CatalogDialogs() {
           </Button>
           {edit && (
             <Button
-              disabled={!draft.name?.trim() || working}
+              disabled={
+                !draft.name?.trim() || working || (draft.kind === 'smart' && !validSmartRules(draft.rules || []))
+              }
               onClick={() =>
                 execute(async () => {
                   await invoke('library_collection', { action: 'save', collection: draft, paths: [] });
