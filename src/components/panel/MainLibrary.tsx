@@ -3,6 +3,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { open } from '@tauri-apps/plugin-shell';
 import {
   CheckCheck,
+  Database,
   Folder,
   FolderInput,
   Home,
@@ -41,6 +42,7 @@ import { useLibraryStore } from '../../store/useLibraryStore';
 import { Job, useProcessStore } from '../../store/useProcessStore';
 import { useUIStore } from '../../store/useUIStore';
 import SettingsPanel from './SettingsPanel';
+import { useCatalogStore } from '../../store/useCatalogStore';
 
 import LibraryGrid from './library/LibraryGrid';
 import { JobsMenu, SearchInput, ViewOptionsDropdown } from './library/LibraryHeader';
@@ -171,6 +173,8 @@ function ThumbnailProgressCount() {
 }
 
 export default function MainLibrary(props: MainLibraryProps) {
+  const catalogActive = useCatalogStore((s) => s.active);
+  const libraryJobs=useCatalogStore(s=>s.catalog?.jobs.some(j=>j.status==='running'||j.status==='queued'));
   const { t } = useTranslation();
   const setUI = useUIStore((state) => state.setUI);
   const [appVersion, setAppVersion] = useState('');
@@ -338,7 +342,7 @@ export default function MainLibrary(props: MainLibraryProps) {
     checkVersion();
   }, []);
 
-  if (!props.rootPaths || props.rootPaths.length === 0) {
+  if ((!props.rootPaths || props.rootPaths.length === 0) && !catalogActive) {
     if (!props.appSettings) {
       return null;
     }
@@ -460,7 +464,7 @@ export default function MainLibrary(props: MainLibraryProps) {
                         target="_blank"
                         rel="noopener noreferrer"
                       >
-                        Timon Käch
+                        {t('catalog.timonKCh')}
                       </a>
                     </p>
                     {appVersion && (
@@ -626,6 +630,14 @@ export default function MainLibrary(props: MainLibraryProps) {
                   sortOptions={translatedSortOptions}
                 />
                 <JobsMenu onNavigateToFolder={props.onNavigateToFolder} />
+                <Button
+                  className="relative h-12 w-12 bg-transparent text-text-primary shadow-none p-0"
+                  data-tooltip="Library utilities"
+                  onClick={() => useCatalogStore.getState().set({ utilities: true })}
+                >
+                  <Database size={20} />
+                  {libraryJobs&&<span className="absolute right-2 top-2 w-1.5 h-1.5 rounded-full bg-accent"/>}
+                </Button>
                 {props.isAndroid && (
                   <Button
                     className="h-12 w-12 bg-accent text-button-text shadow-none p-0 flex items-center justify-center"
@@ -689,6 +701,17 @@ export default function MainLibrary(props: MainLibraryProps) {
                   : t('library.status.processing')}
           </Text>
           <Text className="mt-2">{t('library.status.moment')}</Text>
+        </div>
+      ) : catalogActive && !searchCriteria.tags.length && !searchCriteria.text ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center gap-3 p-8">
+          <Database size={32} className="text-text-secondary mb-1" />
+          <Text variant={TextVariants.heading}>{t('catalog.yourPhotoLibrary')}</Text>
+          <Text color={TextColors.secondary} className="max-w-sm">
+            {t('catalog.preparePreviewsOnTheSsdToBrowseYourPhotosAcross')}
+          </Text>
+          <Button className="mt-2" onClick={() => useCatalogStore.getState().set({ utilities: true })}>
+            {t('catalog.prepareLibrary')}
+          </Button>
         </div>
       ) : searchCriteria.tags.length > 0 || searchCriteria.text ? (
         <div

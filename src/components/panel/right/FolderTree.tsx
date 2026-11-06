@@ -42,6 +42,7 @@ import { useUIStore } from '../../../store/useUIStore';
 import { AlbumItem, AlbumGroup, Album, Invokes, FolderTreeSort, SortDirection } from '../../ui/AppProperties';
 import { useLibraryActions } from '../../../hooks/useLibraryActions';
 import ImmichSection from '../../immich/ImmichSection';
+import CatalogSources from '../../library/CatalogSources';
 
 export interface FolderTree {
   children: FolderTree[];
@@ -931,6 +932,7 @@ export default function FolderTree({
 
         <LayoutGroup id="folder-tree">
           <div className="flex-1 overflow-y-auto" onContextMenu={handleEmptyAreaContextMenu}>
+            <CatalogSources />
             {hasVisiblePinnedTrees && (
               <>
                 <div>

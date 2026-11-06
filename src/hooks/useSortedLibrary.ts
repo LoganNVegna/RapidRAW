@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useCatalogStore } from '../store/useCatalogStore';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import {
@@ -85,6 +86,16 @@ function computeGroupedLibrary(
 
   const groupingMode: GroupingMode = appSettings?.grouping ?? 'off';
   const isGroupingActive = groupingMode !== 'off';
+  // The catalog has already filtered and globally ordered this page.
+  if (useCatalogStore.getState().active && imageList.every((image: ImageFile) => !!image.assetId)) {
+    const grouped = isGroupingActive
+      ? buildImageGroups(imageList, groupingMode, appSettings?.groupEditedFiles ?? true)
+      : null;
+    return {
+      displayList: grouped?.displayList || imageList,
+      badges: options.includeBadges ? grouped?.badges || null : null,
+    };
+  }
 
   const matchesFilter = (image: ImageFile): boolean => {
     if (filterCriteria.rating !== 0) {
@@ -244,8 +255,7 @@ function computeGroupedLibrary(
 
   const list = [...filteredBySearch];
 
-  const getRatingSortValue = (image: ImageFile) =>
-    image.flag === ImageFlag.Reject ? -1 : imageRatings[image.path] || 0;
+  const getRatingSortValue = (image: ImageFile) => imageRatings[image.path] || 0;
 
   const { key, order } = sortCriteria;
 
@@ -325,6 +335,7 @@ export function computeSortedLibrary(libraryState: any, settingsState: any): Ima
 }
 
 export function useSortedLibrary() {
+  const catalogActive = useCatalogStore((state) => state.active);
   const imageList = useLibraryStore((state) => state.imageList);
   const imageRatings = useLibraryStore((state) => state.imageRatings);
   const filterCriteria = useLibraryStore((state) => state.filterCriteria);
@@ -344,7 +355,7 @@ export function useSortedLibrary() {
       { appSettings },
       { includeBadges: false },
     ).displayList;
-  }, [imageList, sortCriteria, imageRatings, filterCriteria, searchCriteria, appSettings, exifByPath]);
+  }, [imageList, sortCriteria, imageRatings, filterCriteria, searchCriteria, appSettings, exifByPath, catalogActive]);
 
   const badges = useMemo(
     () => (groupingMode !== 'off' ? buildImageGroups(imageList, groupingMode, groupEditedFiles).badges : null),

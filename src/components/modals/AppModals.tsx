@@ -1,5 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
+import { invoke } from '@tauri-apps/api/core';
 import { useUIStore } from '../../store/useUIStore';
 import { useLibraryStore } from '../../store/useLibraryStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
@@ -270,8 +271,15 @@ export default function AppModals(props: AppModalsProps) {
         suggestions={cullingModalState.suggestions}
         error={cullingModalState.error}
         imagePaths={cullingModalState.pathsToCull}
-        onApply={(paths) => {
-          props.handleSetFlag(ImageFlag.Reject, paths);
+        initialSettings={cullingModalState.savedSettings}
+        onApply={async (paths, decisions) => {
+          await invoke('library_accept_suggestions', { paths, decisions });
+          const selected = new Set(paths);
+          useLibraryStore.getState().setLibrary((state) => ({
+            imageList: state.imageList.map((image) =>
+              selected.has(image.path) ? { ...image, flag: ImageFlag.Reject } : image,
+            ),
+          }));
           setUI({
             cullingModalState: { isOpen: false, progress: null, suggestions: null, error: null, pathsToCull: [] },
           });

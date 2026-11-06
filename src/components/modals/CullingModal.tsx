@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle, XCircle, Loader2, Users } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -20,7 +20,8 @@ interface CullingModalProps {
   suggestions: CullingSuggestions | null;
   error: string | null;
   imagePaths: string[];
-  onApply(paths: string[]): void;
+  initialSettings?: CullingSettings;
+  onApply(paths: string[], decisions: Array<{ id: string; data: unknown }>): Promise<void>;
   onError(error: string): void;
 }
 
@@ -65,6 +66,7 @@ export default function CullingModal({
   suggestions,
   error,
   imagePaths,
+  initialSettings,
   onApply,
   onError,
 }: CullingModalProps) {
@@ -88,9 +90,53 @@ export default function CullingModal({
     burstWindowSeconds: 5,
   });
 
+  useEffect(() => {
+    if (isOpen && initialSettings) setSettings(initialSettings);
+  }, [isOpen, initialSettings]);
   const [selectedRejects, setSelectedRejects] = useState<Set<string>>(new Set());
+  const [isApplying, setIsApplying] = useState(false);
   const [groups, setGroups] = useState<CullingSuggestions['similarGroups']>([]);
   const [activeTab, setActiveTab] = useState<'similar' | 'blurry'>('similar');
+  const [page, setPage] = useState(0);
+  const [dismissedBlurry, setDismissedBlurry] = useState(new Set<string>());
+  useEffect(() => setDismissedBlurry(new Set()), [suggestions]);
+  useEffect(() => setPage(0), [activeTab, suggestions]);
+  const visibleGroups = groups.slice(page * 10, page * 10 + 10);
+  const filteredBlurry = (suggestions?.blurryImages || []).filter((i) => !dismissedBlurry.has(i.path));
+  const visibleBlurry = filteredBlurry.slice(page * 50, page * 50 + 50);
+  const visiblePaths = (
+    activeTab === 'similar'
+      ? visibleGroups.flatMap((g) => [g.representative.path, ...g.duplicates.map((d) => d.path)])
+      : visibleBlurry.map((i) => i.path)
+  ).join('\n');
+  useEffect(() => {
+    if (stage !== 'results' || !visiblePaths) return;
+    let cancelled = false;
+    void (async () => {
+      const paths = visiblePaths.split('\n').filter((p) => !useProcessStore.getState().thumbnails[p]);
+      for (let i = 0; i < paths.length && !cancelled; i += 250) {
+        const previews = await invoke<Record<string, { smallPreview: string }>>('library_previews', {
+          paths: paths.slice(i, i + 250),
+        });
+        if (cancelled) return;
+        useProcessStore.getState().setProcess((s) => ({
+          thumbnails: {
+            ...s.thumbnails,
+            ...Object.fromEntries(
+              Object.entries(previews).map(([path, value]) => [path, convertFileSrc(value.smallPreview)]),
+            ),
+          },
+        }));
+      }
+    })().catch(console.error);
+    return () => {
+      cancelled = true;
+    };
+  }, [visiblePaths, stage]);
+  const pages = Math.ceil(activeTab === 'similar' ? groups.length / 10 : filteredBlurry.length / 50);
+  useEffect(() => {
+    if (page >= pages && pages > 0) setPage(pages - 1);
+  }, [pages, page]);
 
   useEffect(() => {
     if (isOpen) {
@@ -148,8 +194,28 @@ export default function CullingModal({
     });
   };
 
-  const handleApply = () => {
-    onApply(Array.from(selectedRejects));
+  const handleApply = async () => {
+    setIsApplying(true);
+    const decisions = groups
+      .filter((g) => g.duplicates.some((d) => selectedRejects.has(d.path)))
+      .map((g) => ({
+        id: g.id,
+        data: {
+          ...g,
+          rejected: [...selectedRejects].filter((p) => g.duplicates.some((d) => d.path === p)),
+          provenance: 'preview-provisional-v3',
+        },
+      }));
+    const blurry = (suggestions?.blurryImages || [])
+      .filter((i) => selectedRejects.has(i.path))
+      .map((i) => ({ id: `blur:${i.assetId || i.path}:${i.sourceRevision}`, data: i }));
+    try {
+      await onApply([...selectedRejects], [...decisions, ...blurry]);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setIsApplying(false);
+    }
   };
 
   const numSimilar = suggestions?.similarGroups.reduce((acc, group) => acc + group.duplicates.length, 0) || 0;
@@ -226,6 +292,11 @@ export default function CullingModal({
         </div>
       </div>
       <div className="flex justify-end gap-3 mt-8">
+        <Switch
+          label="Include reviewed suggestions"
+          checked={settings.includeReviewed ?? false}
+          onChange={(value) => setSettings((s) => ({ ...s, includeReviewed: value }))}
+        />
         <button
           className="px-4 py-2 rounded-md text-text-secondary hover:bg-surface transition-colors"
           onClick={onClose}
@@ -340,8 +411,28 @@ export default function CullingModal({
             >
               {activeTab === 'similar' && (
                 <div className="space-y-4">
-                  {groups.map((group, index) => (
+                  {visibleGroups.map((group, index) => (
                     <div key={group.id} className="bg-surface rounded-lg p-3">
+                      <div className="flex gap-2 mb-2">
+                        <button
+                          className="px-2 py-1 rounded border border-white/20"
+                          onClick={() => {
+                            setGroups((current) => current.filter((g) => g.id !== group.id));
+                            setSelectedRejects((current) => {
+                              const next = new Set(current);
+                              group.duplicates.forEach((d) => next.delete(d.path));
+                              return next;
+                            });
+                            invoke('library_suggestion', {
+                              id: group.id,
+                              state: 'dismissed',
+                              data: { ...group, reason: 'different-moments-or-intentional-effect' },
+                            }).catch(console.error);
+                          }}
+                        >
+                          {t('catalog.keepGroupSplitIncorrectGroup')}
+                        </button>
+                      </div>
                       <Text variant={TextVariants.heading} className="mb-2">
                         {t('modals.culling.groupHeader', { index: index + 1 })}
                       </Text>
@@ -386,24 +477,48 @@ export default function CullingModal({
                               >
                                 {t('modals.culling.score', { score: dup.qualityScore.toFixed(2) })}
                                 <button
+                                  title="Exclude this frame from the group"
                                   className="block w-full rounded bg-bg-primary px-1 py-1 text-text-primary"
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    setGroups((current) =>
-                                      current.map((item) =>
-                                        item.id !== group.id
-                                          ? item
-                                          : {
-                                              ...item,
-                                              representative: dup,
-                                              duplicates: [
-                                                item.representative,
-                                                ...item.duplicates.filter((image) => image.path !== dup.path),
-                                              ],
-                                              reasons: [],
-                                            },
-                                      ),
-                                    );
+                                    const updated = {
+                                      ...group,
+                                      duplicates: group.duplicates.filter((d) => d.path !== dup.path),
+                                    };
+                                    setGroups((current) => current.map((g) => (g.id === group.id ? updated : g)));
+                                    invoke('library_suggestion', {
+                                      id: group.id,
+                                      state: 'pending',
+                                      data: updated,
+                                    }).catch(console.error);
+                                    setSelectedRejects((current) => {
+                                      const next = new Set(current);
+                                      next.delete(dup.path);
+                                      return next;
+                                    });
+                                  }}
+                                >
+                                  {t('catalog.keepSeparately')}
+                                </button>
+                                <button
+                                  className="block w-full rounded bg-bg-primary px-1 py-1 text-text-primary"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    const updated = {
+                                      ...group,
+                                      representative: dup,
+                                      duplicates: [
+                                        group.representative,
+                                        ...group.duplicates.filter((d) => d.path !== dup.path),
+                                      ],
+                                      reasons: [],
+                                    };
+                                    setGroups((current) => current.map((g) => (g.id === group.id ? updated : g)));
+                                    invoke('library_suggestion', {
+                                      id: group.id,
+                                      state: 'pending',
+                                      data: updated,
+                                    }).catch(console.error);
                                     setSelectedRejects((current) => {
                                       const next = new Set(current);
                                       next.delete(dup.path);
@@ -424,7 +539,7 @@ export default function CullingModal({
               )}
               {activeTab === 'blurry' && (
                 <div className="grid grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
-                  {suggestions.blurryImages.map((img) => (
+                  {visibleBlurry.map((img) => (
                     <ImageThumbnail
                       key={img.path}
                       path={img.path}
@@ -433,6 +548,28 @@ export default function CullingModal({
                       onToggle={() => handleToggleReject(img.path)}
                     >
                       {t('modals.culling.sharpness', { sharpness: img.sharpnessMetric.toFixed(0) })}
+                      <button
+                        className="block w-full rounded bg-bg-primary px-1 py-1 text-text-primary"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          invoke('library_suggestion', {
+                            id: `blur:${img.assetId || img.path}:${img.sourceRevision}`,
+                            state: 'dismissed',
+                            data: { ...img, reason: 'intentional-effect' },
+                          })
+                            .then(() => {
+                              setDismissedBlurry((current) => new Set([...current, img.path]));
+                              setSelectedRejects((current) => {
+                                const next = new Set(current);
+                                next.delete(img.path);
+                                return next;
+                              });
+                            })
+                            .catch(console.error);
+                        }}
+                      >
+                        Keep intentional effect
+                      </button>
                     </ImageThumbnail>
                   ))}
                 </div>
@@ -442,6 +579,29 @@ export default function CullingModal({
         </div>
 
         <div className="flex justify-between items-center gap-3 mt-6">
+          {pages > 1 && (
+            <div className="flex gap-2 items-center text-sm">
+              <button
+                aria-label={t('catalog.previousPage')}
+                disabled={!page}
+                className="disabled:opacity-30"
+                onClick={() => setPage((p) => p - 1)}
+              >
+                ←
+              </button>
+              <span>
+                {page + 1} / {pages}
+              </span>
+              <button
+                aria-label={t('catalog.nextPage')}
+                disabled={page + 1 >= pages}
+                className="disabled:opacity-30"
+                onClick={() => setPage((p) => p + 1)}
+              >
+                →
+              </button>
+            </div>
+          )}
           <div className="flex-1">
             <Text variant={TextVariants.small}>{t('modals.culling.reviewSelectionNotice')}</Text>
           </div>
@@ -452,7 +612,8 @@ export default function CullingModal({
             >
               {t('modals.culling.cancel')}
             </button>
-            <Button onClick={handleApply} disabled={selectedRejects.size === 0}>
+            <Button onClick={handleApply} disabled={selectedRejects.size === 0 || isApplying}>
+              {isApplying && <Loader2 size={16} className="animate-spin" />}
               {t('modals.culling.rejectSelected', { count: selectedRejects.size })}
             </Button>
           </div>

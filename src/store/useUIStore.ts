@@ -8,6 +8,7 @@ import {
   Panel,
   UiVisibility,
   CullingSuggestions,
+  CullingSettings,
   PanelRegion,
   WorkspaceState,
   CollapsibleSectionsState,
@@ -65,6 +66,7 @@ interface HdrModalState {
 }
 
 interface CullingModalState {
+  savedSettings?: CullingSettings;
   isOpen: boolean;
   suggestions: CullingSuggestions | null;
   progress: { current: number; total: number; stage: string } | null;

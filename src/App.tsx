@@ -18,6 +18,7 @@ import clsx from 'clsx';
 
 import TitleBar from './window/TitleBar';
 import FolderTree from './components/panel/right/FolderTree';
+import { useCatalogStore } from './store/useCatalogStore';
 import SettingsPanel from './components/panel/SettingsPanel';
 import ExportPanel from './components/panel/right/ExportPanel';
 import GlobalTooltip from './components/ui/GlobalTooltip';
@@ -394,6 +395,10 @@ function App() {
   useImagePreloader(sortedImageList);
 
   const handleLibraryRefresh = useCallback(async () => {
+    if (useCatalogStore.getState().active) {
+      useCatalogStore.getState().set({ refresh: Date.now() });
+      return;
+    }
     if (currentFolderPath) {
       if (currentFolderPath.startsWith('Album: ')) {
         const { activeAlbumId, albumTree } = useLibraryStore.getState();
@@ -795,7 +800,8 @@ function App() {
   );
 
   const hasRoots = rootPaths && rootPaths.length > 0;
-  const hasMainContent = hasRoots || (activeView === 'editor' && !!selectedImage);
+  const catalogActive = useCatalogStore((s) => s.active);
+  const hasMainContent = hasRoots || catalogActive || (activeView === 'editor' && !!selectedImage);
 
   const shouldHideFolderTree = useCompactPanels || useWidePanels;
   const isWgpuActive =
@@ -872,6 +878,13 @@ function App() {
         .catch((err) => {
           toast.error(`Failed to add to album: ${err}`);
         });
+    }
+    if (active.data.current?.type === 'library-image' && over?.data.current?.type === 'catalog-collection') {
+      invoke('library_collection', {
+        action: 'add',
+        collection: { id: over.data.current.id },
+        paths: activeImageDragItem?.paths || [active.data.current.path],
+      }).catch((error) => toast.error(String(error)));
     }
   };
 

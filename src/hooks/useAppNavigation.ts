@@ -4,11 +4,12 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { homeDir } from '@tauri-apps/api/path';
 import { toast } from 'react-toastify';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { initialQuery, useCatalogStore } from '../store/useCatalogStore';
 import { canvasToolState, useEditorStore } from '../store/useEditorStore';
 import { useUIStore } from '../store/useUIStore';
 import { useProcessStore } from '../store/useProcessStore';
 import { useSettingsStore } from '../store/useSettingsStore';
-import { Invokes, LibraryViewMode, ImageFile } from '../components/ui/AppProperties';
+import { Invokes, LibraryViewMode, LibraryDisplayMode, ImageFile } from '../components/ui/AppProperties';
 import { INITIAL_ADJUSTMENTS, normalizeLoadedAdjustments } from '../utils/adjustments';
 import { globalImageCache } from '../utils/ImageLRUCache';
 import { debouncedSave, debouncedSetHistory } from './useEditorActions';
@@ -116,6 +117,7 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
   } = refs;
 
   const handleGoHome = useCallback(() => {
+    useCatalogStore.getState().set({ active: false });
     useLibraryStore.getState().setLibrary({
       rootPaths: [],
       currentFolderPath: null,
@@ -345,6 +347,7 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
       preserveEditor = false,
       skipHistory = false,
     ) => {
+      useCatalogStore.getState().set({ active: false });
       const { appSettings, handleSettingsChange } = useSettingsStore.getState();
       const { pinnedFolders } = appSettings || { pinnedFolders: [] };
       const { setLibrary, sortCriteria } = useLibraryStore.getState();
@@ -417,6 +420,30 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
           useEditorStore.getState().patchesSentToBackend.clear();
         }
 
+        if (path) {
+          const query = { ...initialQuery, folder: path, recursive: libraryViewMode === LibraryViewMode.Recursive };
+          const indexed = await invoke<{ total: number }>('library_query', { query: { ...query, limit: 1 } }).catch(
+            () => null,
+          );
+          if (useLibraryStore.getState().currentFolderPath !== path) return;
+          const normalize = (value: string) => value.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
+          const knownRoot = useCatalogStore
+            .getState()
+            .catalog?.roots?.some(
+              (root) => normalize(path) === normalize(root) || normalize(path).startsWith(normalize(root) + '/'),
+            );
+          if (indexed && (indexed.total > 0 || knownRoot)) {
+            const catalog = useCatalogStore.getState();
+            catalog.set({
+              active: true,
+              query,
+              scopeRevision: catalog.scopeRevision + 1,
+              pendingSelection:
+                !preserveEditor && appSettings?.libraryDisplayMode === LibraryDisplayMode.Cull ? 'first' : undefined,
+            });
+            return;
+          }
+        }
         const command =
           libraryViewMode === LibraryViewMode.Recursive ? Invokes.ListImagesRecursive : Invokes.ListImagesInDir;
 
@@ -457,6 +484,7 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
 
   const handleSelectAlbum = useCallback(
     async (albumId: string, albumName: string, imagePaths: string[], preserveEditor = false, skipHistory = false) => {
+      useCatalogStore.getState().set({ active: false });
       const { setLibrary, sortCriteria } = useLibraryStore.getState();
       const { setUI } = useUIStore.getState();
 

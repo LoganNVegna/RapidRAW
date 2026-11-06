@@ -11,6 +11,7 @@ import {
 import { KEYBIND_DEFINITIONS, getEffectiveCombo, normalizeCombo } from '../utils/keyboardUtils';
 import { useEditorStore } from '../store/useEditorStore';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { useCatalogStore } from '../store/useCatalogStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getReopenedPanelWidth, useUIStore } from '../store/useUIStore';
 import { useProcessStore } from '../store/useProcessStore';
@@ -665,6 +666,20 @@ export const useKeyboardShortcuts = ({
           else if (event.code === 'KeyX') handleSetFlag(ImageFlag.Reject);
           else if (event.code === 'KeyU') handleSetFlag(null);
           else handleRate(Number(event.code.at(-1)), undefined, false);
+          const catalog = useCatalogStore.getState();
+          if (
+            state.settings.appSettings?.cullAutoAdvance &&
+            state.library.multiSelectedPaths.length === 1 &&
+            current &&
+            !next &&
+            catalog.active &&
+            catalog.query.offset + catalog.query.limit < catalog.total
+          ) {
+            catalog.set({
+              query: { ...catalog.query, offset: catalog.query.offset + catalog.query.limit },
+              pendingSelection: 'first',
+            });
+          }
           if (
             state.settings.appSettings?.cullAutoAdvance &&
             state.library.multiSelectedPaths.length === 1 &&
@@ -792,7 +807,11 @@ export const useKeyboardShortcuts = ({
       if (event.isComposing) return;
       const state = getStoreState();
 
+      const catalogDialog = useCatalogStore.getState();
       const isModalOpen =
+        catalogDialog.utilities ||
+        !!catalogDialog.edit ||
+        !!catalogDialog.detailPaths?.length ||
         state.ui.isCreateFolderModalOpen ||
         state.ui.isRenameFolderModalOpen ||
         state.ui.isRenameFileModalOpen ||

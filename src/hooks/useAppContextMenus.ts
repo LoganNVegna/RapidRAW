@@ -57,6 +57,7 @@ import { useTranslation } from 'react-i18next';
 import { useContextMenu } from '../context/ContextMenuContext';
 import { useEditorStore } from '../store/useEditorStore';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { catalogContextOptions } from '../components/library/catalogContextOptions';
 import { JobKind, useProcessStore } from '../store/useProcessStore';
 import { useUIStore } from '../store/useUIStore';
 import { useSettingsStore } from '../store/useSettingsStore';
@@ -709,6 +710,7 @@ export function useAppContextMenus(latestProps: UseAppContextMenusProps) {
       };
 
       const options = [
+        ...catalogContextOptions(finalSelection),
         ...(!isEditingThisImage
           ? [
               {

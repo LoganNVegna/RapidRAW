@@ -2,6 +2,7 @@ import { createElement, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'react-toastify';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { useCatalogStore } from '../store/useCatalogStore';
 import { canvasToolState, useEditorStore } from '../store/useEditorStore';
 import { useUIStore } from '../store/useUIStore';
 import {
@@ -221,9 +222,13 @@ export function useLibraryActions(handleImageSelect?: (path: string, openInEdito
       }),
     );
 
-    invoke(Invokes.SetRatingForPaths, { paths: pathsToRate, rating: finalRating }).catch((err) => {
+    (useCatalogStore.getState().active
+      ? invoke('library_edit', { paths: pathsToRate, field: 'rating', value: finalRating })
+      : invoke(Invokes.SetRatingForPaths, { paths: pathsToRate, rating: finalRating })
+    ).catch((err) => {
       console.error(err);
       toast.error(`Failed to apply rating: ${err}`);
+      useCatalogStore.getState().set({ refresh: Date.now() });
     });
   }, []);
 
@@ -237,9 +242,13 @@ export function useLibraryActions(handleImageSelect?: (path: string, openInEdito
       })),
     );
 
-    invoke(Invokes.SetFlagForPaths, { paths: expandedPaths, flag }).catch((err) => {
+    (useCatalogStore.getState().active
+      ? invoke('library_edit', { paths: expandedPaths, field: 'flag', value: flag })
+      : invoke(Invokes.SetFlagForPaths, { paths: expandedPaths, flag })
+    ).catch((err) => {
       console.error(err);
       toast.error(`Failed to update flag: ${err}`);
+      useCatalogStore.getState().set({ refresh: Date.now() });
     });
   }, []);
 
@@ -272,7 +281,9 @@ export function useLibraryActions(handleImageSelect?: (path: string, openInEdito
     const finalColor = color !== null && color === currentColor ? null : color;
 
     try {
-      await invoke(Invokes.SetColorLabelForPaths, { paths: pathsToUpdate, color: finalColor });
+      if (useCatalogStore.getState().active)
+        await invoke('library_edit', { paths: pathsToUpdate, field: 'color', value: finalColor });
+      else await invoke(Invokes.SetColorLabelForPaths, { paths: pathsToUpdate, color: finalColor });
       const pathSet = new Set(pathsToUpdate);
       applyWithAutoAdvance(pathsToUpdate, true, () =>
         setLibrary((state) => ({

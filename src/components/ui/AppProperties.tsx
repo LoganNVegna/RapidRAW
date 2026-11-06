@@ -243,6 +243,8 @@ export interface AppSettings {
   aiMapsCacheLimitGb?: number;
   thumbnailCacheLimitGb?: number;
   cacheDirectory?: string;
+  libraryDirectory?: string;
+  catalogMetadataStorage?: boolean;
   aiConnectorAddress?: string;
   aiGpuAcceleration?: boolean;
   aiProvider?: string;
@@ -399,6 +401,10 @@ export interface Folder {
 }
 
 export interface ImageFile {
+  assetId?: string;
+  available?: boolean;
+  review?: string;
+  memberships?: string[];
   is_edited: boolean;
   modified: number;
   path: string;
@@ -528,6 +534,7 @@ export interface CullingSettings {
   groupSimilar: boolean;
   filterBlurry: boolean;
   burstWindowSeconds?: number;
+  includeReviewed?: boolean;
 }
 
 interface ImageAnalysisResult {
@@ -541,6 +548,8 @@ interface ImageAnalysisResult {
   captureTime?: number;
   cameraIdentity?: string;
   analysisSource?: string;
+  sourceRevision?: string;
+  assetId?: string;
 }
 
 interface CullGroup {

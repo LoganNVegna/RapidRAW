@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Ban,
+  Album,
   Flag,
   Image as ImageIcon,
   Folder,
@@ -57,6 +58,9 @@ const ThumbnailComponent = ({
 }: any) => {
   const { t } = useTranslation();
   const data = useProcessStore((s) => s.thumbnails[path]);
+  const memberships = useLibraryStore(
+    (s) => s.imageList.find((image) => image.path === path)?.memberships?.length || 0,
+  );
   const exif = useLibraryStore((s) => s.exifByPath[path]);
   const isAiPending = useProcessStore((s) => !!s.aiPendingPaths[path]);
   const isAiPaused = useProcessStore((s) => s.aiJobs.paused);
@@ -303,6 +307,12 @@ const ThumbnailComponent = ({
         )}
       />
 
+      {memberships > 0 && (
+        <div className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-full h-5 px-1.5 bg-black/30 text-white text-[10px] pointer-events-none">
+          <Album size={11} />
+          {memberships}
+        </div>
+      )}
       <div className="absolute top-1.5 right-1.5 flex items-center justify-end z-10 pointer-events-none">
         <div
           className={clsx(

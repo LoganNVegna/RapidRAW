@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import CatalogWorkspace from '../library/CatalogWorkspace';
 import { useShallow } from 'zustand/react/shallow';
 
 import CommunityPage from '../panel/CommunityPage';
@@ -175,6 +176,7 @@ export default function LibraryView({
             onNavigateToCommunity={handleNavigateToCommunity}
           />
         )}
+        <CatalogWorkspace />
         {rootPaths && rootPaths.length > 0 && (
           <BottomBar
             isCopied={isCopied}
